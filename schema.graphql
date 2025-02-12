@@ -1,0 +1,56 @@
+"""
+Represents a credit consumption event on-chain
+"""
+type CreditConsumption @entity {
+  id: ID!
+  creditId: String! @index # The creditId from the CreditSpent event
+  beneficiary: UserCreditStats! # The user that consumed the credit
+  amount: BigInt! # Amount of credit consumed
+  timestamp: DateTime! # When the credit was consumed
+  block: Int! # Block number when consumed
+  txHash: String! @index # Transaction hash
+}
+
+"""
+Tracks aggregated credit usage per user
+"""
+type UserCreditStats @entity {
+  id: ID! # User address
+  address: String! @index # User address
+  totalCreditsConsumed: BigInt!
+  lastCreditUsage: DateTime
+  consumptions: [CreditConsumption!]! @derivedFrom(field: "beneficiary")
+}
+
+"""
+Tracks hourly credit usage for rate limiting
+"""
+type HourlyCreditUsage @entity {
+  id: ID! # hour timestamp
+  totalAmount: BigInt!
+  usageCount: Int!
+  timestamp: DateTime!
+}
+
+"""
+Tracks daily credit usage for reporting
+"""
+type DailyCreditUsage @entity {
+  id: ID! # day timestamp
+  totalAmount: BigInt!
+  uniqueUsers: Int!
+  usageCount: Int!
+  timestamp: DateTime!
+}
+
+"""
+Tracks marketplace-specific credit usage
+"""
+type MarketplaceCreditUsage @entity {
+  id: ID!
+  creditConsumption: CreditConsumption!
+  assetId: String! @index # The ID of the asset purchased
+  collectionAddress: String! @index # The collection contract address
+  isPrimarySale: Boolean! # Whether this was a primary sale
+  price: BigInt! # The price of the asset in MANA
+}

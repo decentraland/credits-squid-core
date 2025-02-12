@@ -1,0 +1,26 @@
+manifestVersion: subsquid.io/v0.1
+name: decentraland-credits
+version: 1
+description: |-
+  Decentraland Credits Squid - Tracks credit grants, consumption, and transfers in the Decentraland ecosystem
+
+build: 
+
+deploy:
+  addons:
+    postgres: 
+  processor:
+    cmd: ["node", "lib/main"]
+  api:
+    cmd: ["npx", "squid-graphql-server"]
+    env:
+      - name: GQL_PORT
+        value: "4350"
+
+scale:
+  processor: 1
+  api: 1
+
+database:
+  schema: "./schema.graphql"
+  module: "./db"

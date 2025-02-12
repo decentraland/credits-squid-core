@@ -1,0 +1,29 @@
+{
+  "name": "decentraland-credits-squid",
+  "version": "0.0.1",
+  "description": "Decentraland Credits Squid - Tracks credit grants, consumption, and transfers",
+  "main": "lib/main.js",
+  "scripts": {
+    "build": "rm -rf lib && tsc",
+    "db:migrate": "npx squid-typeorm-migration apply",
+    "processor:start": "node lib/main.js",
+    "start": "npm run processor:start"
+  },
+  "dependencies": {
+    "@subsquid/evm-abi": "^0.3.1",
+    "@subsquid/evm-codec": "^0.3.0",
+    "@subsquid/evm-processor": "^1.0.0",
+    "@subsquid/graphql-server": "^4.0.0",
+    "@subsquid/typeorm-migration": "^1.0.0",
+    "@subsquid/typeorm-store": "^1.0.0",
+    "dotenv": "^16.0.0",
+    "ethers": "^6.13.5",
+    "pg": "^8.11.0",
+    "typeorm": "^0.3.0"
+  },
+  "devDependencies": {
+    "@subsquid/evm-typegen": "^4.3.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}
