@@ -61,7 +61,7 @@ export CURRENT_SQUID_DB_USER=$NEW_DB_USER
 echo "Exported CURRENT_SQUID_DB_USER: $CURRENT_SQUID_DB_USER"
 echo "Exported DB_SCHEMA: $DB_SCHEMA"
 
-# Start the processor service and the GraphQL server, and write logs to a file
+# Start the processor service
 echo "Starting squid services..."
 sqd run:credits --node-options=$NODE_OPTIONS
 
