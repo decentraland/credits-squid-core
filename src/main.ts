@@ -31,7 +31,13 @@ const processor = new EvmBatchProcessor()
     topic0: [events.CreditSpent.topic],
   });
 
-const db = new TypeormDatabase();
+const schemaName = process.env.DB_SCHEMA;
+
+const db = new TypeormDatabase({
+  isolationLevel: "READ COMMITTED",
+  supportHotBlocks: true,
+  stateSchema: `credits_processor_${schemaName}`,
+});
 
 processor.run(db, async (ctx) => {
   console.log("Processing new batch of blocks...");
