@@ -36,7 +36,7 @@ const schemaName = process.env.DB_SCHEMA;
 const db = new TypeormDatabase({
   isolationLevel: "READ COMMITTED",
   supportHotBlocks: true,
-  stateSchema: `credits_processor_${schemaName}`,
+  stateSchema: `${schemaName}_processor`,
 });
 
 processor.run(db, async (ctx) => {
