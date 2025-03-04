@@ -7,6 +7,7 @@ import { events } from "./abi/credits";
 // TODO: Replace with actual contract.
 const CREDITS_CONTRACT_ADDRESS = "0xb3f1d3e806cf2ec822ad32c01ad64a1995b67752"; // Amoy testnet contract address.
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
+const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3000;
 
 const GATEWAY =
   process.env.CHAIN_ID === "137"
@@ -19,6 +20,7 @@ const processor = new EvmBatchProcessor()
     url: assertNotNull(RPC_ENDPOINT),
     rateLimit: 10,
   })
+  .setPrometheusPort(PROMETHEUS_PORT)
   .setFinalityConfirmation(75)
   .setBlockRange({ from: 17942200 })
   .setFields({

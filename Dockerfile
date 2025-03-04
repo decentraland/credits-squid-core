@@ -44,9 +44,7 @@ RUN apk update && apk add --no-cache tini postgresql-client curl jq python3 py3-
     && pip3 install awscli \
     && rm -rf /var/cache/apk/*
 
-ENV ETH_PROMETHEUS_PORT 3000
-ENV POLYGON_PROMETHEUS_PORT 3001
-ENV GQL_PORT 5000
+ENV PROMETHEUS_PORT 3000
 
 RUN touch /squid/.env
 
