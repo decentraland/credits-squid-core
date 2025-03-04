@@ -1,0 +1,41 @@
+name: Deploy squid server
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment-environment:
+        required: true
+        type: choice
+        options:
+          - dev
+          - prd
+        default: dev
+        description: Environment
+      deployment-server:
+        required: true
+        type: choice
+        options:
+          - a
+          - b
+        default: a
+        description: Server
+      tag:
+        required: true
+        default: "latest"
+        type: string
+        description: "Docker tag (quay.io)"
+
+jobs:
+  deployment:
+    if: ${{ inputs.deployment-environment != '' && inputs.deployment-server != '' }}
+    name: "Deploy to: ${{ inputs.deployment-environment }} - server ${{ inputs.deployment-server }}"
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.deployment-environment }}
+    steps:
+      - name: Trigger deployment
+        uses: decentraland/dcl-deploy-action@main
+        with:
+          dockerImage: "quay.io/decentraland/credits-squid-core:${{ inputs.tag }}"
+          serviceName: "credits-squid-server-${{ inputs.deployment-server }}"
+          env: ${{ inputs.deployment-environment }}
+          token: ${{ secrets.GITHUB_TOKEN }}
