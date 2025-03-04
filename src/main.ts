@@ -13,7 +13,6 @@ const GATEWAY =
     ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
     : "https://v2.archive.subsquid.io/network/polygon-amoy-testnet";
 
-// First we configure data retrieval.
 const processor = new EvmBatchProcessor()
   .setGateway(GATEWAY)
   .setRpcEndpoint({
