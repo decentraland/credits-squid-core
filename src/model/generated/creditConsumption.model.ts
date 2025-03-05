@@ -1,4 +1,4 @@
-import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, StringColumn as StringColumn_, Index as Index_, ManyToOne as ManyToOne_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_, IntColumn as IntColumn_} from "@subsquid/typeorm-store"
+import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, ManyToOne as ManyToOne_, Index as Index_, StringColumn as StringColumn_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_, IntColumn as IntColumn_} from "@subsquid/typeorm-store"
 import {UserCreditStats} from "./userCreditStats.model"
 
 /**
@@ -14,12 +14,12 @@ export class CreditConsumption {
     id!: string
 
     @Index_()
-    @StringColumn_({nullable: false})
-    creditId!: string
-
-    @Index_()
     @ManyToOne_(() => UserCreditStats, {nullable: true})
     beneficiary!: UserCreditStats
+
+    @Index_()
+    @StringColumn_({nullable: false})
+    contract!: string
 
     @BigIntColumn_({nullable: false})
     amount!: bigint

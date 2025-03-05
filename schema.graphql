@@ -3,8 +3,8 @@ Represents a credit consumption event on-chain
 """
 type CreditConsumption @entity {
   id: ID!
-  creditId: String! @index # The creditId from the CreditSpent event
   beneficiary: UserCreditStats! # The user that consumed the credit
+  contract: String! @index # The contract that consumed the credit
   amount: BigInt! # Amount of credit consumed
   timestamp: DateTime! # When the credit was consumed
   block: Int! # Block number when consumed

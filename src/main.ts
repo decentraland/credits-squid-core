@@ -111,8 +111,8 @@ processor.run(db, async (ctx) => {
 
         // Create credit consumption record
         const consumption = new CreditConsumption({
-          id: log.id,
-          creditId: _creditId,
+          id: _creditId,
+          contract: log.address,
           beneficiary: userStat,
           amount,
           timestamp,
