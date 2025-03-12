@@ -5,7 +5,7 @@ import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
 import { events } from "./abi/credits";
 
 // TODO: Replace with actual contract.
-const CREDITS_CONTRACT_ADDRESS = "0xb3f1d3e806cf2ec822ad32c01ad64a1995b67752"; // Amoy testnet contract address.
+const CREDITS_CONTRACT_ADDRESS = "0xb40a9a1afde767025626e9b0c17e028b6305d8b0"; // Amoy testnet contract address.
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3000;
 
