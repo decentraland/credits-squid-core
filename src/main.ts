@@ -63,6 +63,7 @@ processor.run(db, async (ctx) => {
         console.log("🎯 Found CreditUsed event!");
 
         const { _creditId, _sender, _value } = events.CreditUsed.decode(log);
+
         console.log({
           event: "CreditUsed",
           creditId: _creditId,
@@ -135,7 +136,7 @@ processor.run(db, async (ctx) => {
               timestamp,
             });
         }
-        hourUsage.totalAmount += amount;
+        hourUsage.totalAmount += _value;
         hourUsage.usageCount += 1;
         hourlyUsage.set(hourKey, hourUsage);
         console.log("Updated hourly stats:", {
@@ -158,7 +159,7 @@ processor.run(db, async (ctx) => {
               timestamp,
             });
         }
-        dayUsage.totalAmount += amount;
+        dayUsage.totalAmount += _value;
         dayUsage.usageCount += 1;
         dailyUsage.set(dayKey, dayUsage);
         console.log("Updated daily stats:", {
