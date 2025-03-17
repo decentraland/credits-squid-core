@@ -62,11 +62,15 @@ processor.run(db, async (ctx) => {
       ) {
         console.log("🎯 Found CreditUsed event!");
 
-        const { _creditId, _sender, _value } = events.CreditUsed.decode(log);
+        const {
+          _sender,
+          _value,
+          _credit: { salt },
+        } = events.CreditUsed.decode(log);
 
         console.log({
           event: "CreditUsed",
-          creditId: _creditId,
+          creditId: salt,
           beneficiary: _sender,
           amount: _value.toString(),
           blockNumber: block.header.height,
@@ -108,7 +112,7 @@ processor.run(db, async (ctx) => {
 
         // Create credit consumption record
         const consumption = new CreditConsumption({
-          id: _creditId,
+          id: salt,
           contract: log.address,
           beneficiary: userStat,
           amount: _value,
