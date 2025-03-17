@@ -7,7 +7,7 @@ import { events } from "./abi/credits";
 // TODO: Replace with actual contract.
 const CREDITS_CONTRACT_ADDRESS = "0x1985fa82b531cb4e20f103787eba99de67b5c25c"; // Amoy testnet contract address.
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
-const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3000;
+const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 
 const GATEWAY =
   process.env.CHAIN_ID === "137"
