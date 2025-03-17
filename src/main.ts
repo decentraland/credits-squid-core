@@ -5,7 +5,7 @@ import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
 import { events } from "./abi/credits";
 
 // TODO: Replace with actual contract.
-const CREDITS_CONTRACT_ADDRESS = "0xb40a9a1afde767025626e9b0c17e028b6305d8b0"; // Amoy testnet contract address.
+const CREDITS_CONTRACT_ADDRESS = "0x1985fa82b531cb4e20f103787eba99de67b5c25c"; // Amoy testnet contract address.
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3000;
 
@@ -30,7 +30,7 @@ const processor = new EvmBatchProcessor()
   })
   .addLog({
     address: [CREDITS_CONTRACT_ADDRESS],
-    topic0: [events.CreditSpent.topic],
+    topic0: [events.CreditUsed.topic],
   });
 
 const schemaName = process.env.DB_SCHEMA;
@@ -58,17 +58,16 @@ processor.run(db, async (ctx) => {
     for (let log of block.logs) {
       if (
         log.address === CREDITS_CONTRACT_ADDRESS &&
-        log.topics[0] === events.CreditSpent.topic
+        log.topics[0] === events.CreditUsed.topic
       ) {
-        console.log("🎯 Found CreditSpent event!");
+        console.log("🎯 Found CreditUsed event!");
 
-        const { _creditId, beneficiary, amount } =
-          events.CreditSpent.decode(log);
+        const { _creditId, _sender, _value } = events.CreditUsed.decode(log);
         console.log({
-          event: "CreditSpent",
+          event: "CreditUsed",
           creditId: _creditId,
-          beneficiary,
-          amount: amount.toString(),
+          beneficiary: _sender,
+          amount: _value.toString(),
           blockNumber: block.header.height,
           txHash: log.transactionHash,
         });
@@ -76,34 +75,31 @@ processor.run(db, async (ctx) => {
         const timestamp = new Date(block.header.timestamp);
 
         // Get or create UserCreditStats
-        let userStat = userStats.get(beneficiary);
+        let userStat = userStats.get(_sender);
         if (!userStat) {
-          const existingStats = await ctx.store.get(
-            UserCreditStats,
-            beneficiary
-          );
+          const existingStats = await ctx.store.get(UserCreditStats, _sender);
           console.log(
             existingStats
-              ? `Found existing stats for user ${beneficiary}`
-              : `Creating new stats for user ${beneficiary}`
+              ? `Found existing stats for user ${_sender}`
+              : `Creating new stats for user ${_sender}`
           );
 
           userStat =
             existingStats ||
             new UserCreditStats({
-              id: beneficiary,
-              address: beneficiary,
+              id: _sender,
+              address: _sender,
               totalCreditsConsumed: 0n,
             });
-          userStats.set(beneficiary, userStat);
+          userStats.set(_sender, userStat);
         }
 
         const oldTotal = userStat.totalCreditsConsumed;
-        userStat.totalCreditsConsumed += amount;
+        userStat.totalCreditsConsumed += _value;
         userStat.lastCreditUsage = timestamp;
 
         console.log(`Updated user stats:`, {
-          user: beneficiary,
+          user: _sender,
           oldTotal: oldTotal.toString(),
           newTotal: userStat.totalCreditsConsumed.toString(),
           lastUsage: userStat.lastCreditUsage,
@@ -114,7 +110,7 @@ processor.run(db, async (ctx) => {
           id: _creditId,
           contract: log.address,
           beneficiary: userStat,
-          amount,
+          amount: _value,
           timestamp,
           block: block.header.height,
           txHash: log.transactionHash,
