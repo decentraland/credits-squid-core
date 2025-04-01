@@ -77,6 +77,21 @@ processor.run(db, async (ctx) => {
           txHash: log.transactionHash,
         });
 
+        // Create a unique consumptionId that includes tx details to allow multiple consumptions of the same credit
+        const consumptionId = `${salt}-${block.header.height}-${log.transactionHash}`;
+
+        // Check if this specific consumption already exists in database
+        const existingConsumption = await ctx.store.get(
+          CreditConsumption,
+          consumptionId
+        );
+        if (existingConsumption) {
+          console.log(
+            `Consumption record with ID ${consumptionId} already exists in database, skipping event processing`
+          );
+          continue;
+        }
+
         const timestamp = new Date(block.header.timestamp);
 
         // Get or create UserCreditStats
@@ -110,9 +125,10 @@ processor.run(db, async (ctx) => {
           lastUsage: userStat.lastCreditUsage,
         });
 
-        // Create credit consumption record
+        // Create credit consumption record with the unique ID
         const consumption = new CreditConsumption({
-          id: salt,
+          id: consumptionId,
+          creditId: salt,
           contract: log.address,
           beneficiary: userStat,
           amount: _value,
@@ -123,12 +139,18 @@ processor.run(db, async (ctx) => {
         consumptions.push(consumption);
         console.log("Created consumption record:", {
           id: consumption.id,
+          creditId: salt,
           amount: consumption.amount.toString(),
           block: consumption.block,
         });
 
         // Update hourly usage
-        const hourKey = `${timestamp.getUTCFullYear()}-${String(timestamp.getUTCMonth() + 1).padStart(2, '0')}-${String(timestamp.getUTCDate()).padStart(2, '0')}-${String(timestamp.getUTCHours()).padStart(2, '0')}`;
+        const hourKey = `${timestamp.getUTCFullYear()}-${String(
+          timestamp.getUTCMonth() + 1
+        ).padStart(2, "0")}-${String(timestamp.getUTCDate()).padStart(
+          2,
+          "0"
+        )}-${String(timestamp.getUTCHours()).padStart(2, "0")}`;
         let hourUsage = hourlyUsage.get(hourKey);
         if (!hourUsage) {
           hourUsage =
@@ -150,7 +172,9 @@ processor.run(db, async (ctx) => {
         });
 
         // Update daily usage
-        const dayKey = `${timestamp.getUTCFullYear()}-${String(timestamp.getUTCMonth() + 1).padStart(2, '0')}-${String(timestamp.getUTCDate()).padStart(2, '0')}`;
+        const dayKey = `${timestamp.getUTCFullYear()}-${String(
+          timestamp.getUTCMonth() + 1
+        ).padStart(2, "0")}-${String(timestamp.getUTCDate()).padStart(2, "0")}`;
         let dayUsage = dailyUsage.get(dayKey);
         if (!dayUsage) {
           dayUsage =
@@ -184,8 +208,10 @@ processor.run(db, async (ctx) => {
           .filter((c) => {
             const d = c.timestamp;
             return (
-              `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}` ===
-              dayKey
+              `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
+                2,
+                "0"
+              )}-${String(d.getUTCDate()).padStart(2, "0")}` === dayKey
             );
           })
           .map((c) => c.beneficiary.id)
@@ -209,10 +235,31 @@ processor.run(db, async (ctx) => {
     console.log(`- ${dailyUsage.size} daily records`);
     console.log(`- ${consumptions.length} consumption records`);
 
+    // Final check for duplicate consumption records
+    const consumptionIds = new Set<string>();
+    const uniqueConsumptions = consumptions.filter((c) => {
+      if (consumptionIds.has(c.id)) {
+        console.log(
+          `WARNING: Removing duplicate consumption record with ID ${c.id} before saving`
+        );
+        return false;
+      }
+      consumptionIds.add(c.id);
+      return true;
+    });
+
+    if (uniqueConsumptions.length !== consumptions.length) {
+      console.log(
+        `WARNING: Removed ${
+          consumptions.length - uniqueConsumptions.length
+        } duplicate consumption records`
+      );
+    }
+
     await ctx.store.save([...userStats.values()]);
     await ctx.store.save([...hourlyUsage.values()]);
     await ctx.store.save([...dailyUsage.values()]);
-    await ctx.store.save(consumptions);
+    await ctx.store.save(uniqueConsumptions);
 
     console.log("Batch processing complete! ✨\n");
   }
