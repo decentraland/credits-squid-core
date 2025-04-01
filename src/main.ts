@@ -128,7 +128,7 @@ processor.run(db, async (ctx) => {
         });
 
         // Update hourly usage
-        const hourKey = `${timestamp.getUTCFullYear()}-${timestamp.getUTCMonth()}-${timestamp.getUTCDate()}-${timestamp.getUTCHours()}`;
+        const hourKey = `${timestamp.getUTCFullYear()}-${String(timestamp.getUTCMonth() + 1).padStart(2, '0')}-${String(timestamp.getUTCDate()).padStart(2, '0')}-${String(timestamp.getUTCHours()).padStart(2, '0')}`;
         let hourUsage = hourlyUsage.get(hourKey);
         if (!hourUsage) {
           hourUsage =
@@ -150,7 +150,7 @@ processor.run(db, async (ctx) => {
         });
 
         // Update daily usage
-        const dayKey = `${timestamp.getUTCFullYear()}-${timestamp.getUTCMonth()}-${timestamp.getUTCDate()}`;
+        const dayKey = `${timestamp.getUTCFullYear()}-${String(timestamp.getUTCMonth() + 1).padStart(2, '0')}-${String(timestamp.getUTCDate()).padStart(2, '0')}`;
         let dayUsage = dailyUsage.get(dayKey);
         if (!dayUsage) {
           dayUsage =
@@ -184,7 +184,7 @@ processor.run(db, async (ctx) => {
           .filter((c) => {
             const d = c.timestamp;
             return (
-              `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}` ===
+              `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}` ===
               dayKey
             );
           })
