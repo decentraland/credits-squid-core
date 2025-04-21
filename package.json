@@ -10,6 +10,7 @@
     "start": "npm run processor:start"
   },
   "dependencies": {
+    "@slack/bolt": "^4.2.1",
     "@subsquid/evm-abi": "^0.3.1",
     "@subsquid/evm-codec": "^0.3.0",
     "@subsquid/evm-processor": "^1.0.0",
