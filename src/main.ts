@@ -12,7 +12,7 @@ import {
 } from "./slack";
 
 // TODO: Replace with actual contract.
-const isMainnet = process.env.CHAIN_ID === "137";
+const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
 const CREDITS_CONTRACT_ADDRESS = isMainnet
   ? "0x6a03991dfa9d661ef7ad3c6f88b31f16e5a282cf"
