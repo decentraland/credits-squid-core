@@ -27,6 +27,7 @@ const GATEWAY = isMainnet
   ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
   : "https://v2.archive.subsquid.io/network/polygon-amoy-testnet";
 
+const FROM_BLOCK = isMainnet ? 70459461 : 20612932;
 // Initialize Slack component
 let slackComponent: ISlackComponent | undefined;
 
@@ -54,7 +55,7 @@ const processor = new EvmBatchProcessor()
   })
   .setPrometheusPort(PROMETHEUS_PORT)
   .setFinalityConfirmation(75)
-  .setBlockRange({ from: 17942200 })
+  .setBlockRange({ from: FROM_BLOCK })
   .setFields({
     log: {
       transactionHash: true,

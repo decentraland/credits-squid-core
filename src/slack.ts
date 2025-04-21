@@ -60,7 +60,6 @@ export function getCreditUsedMessage(
   timestamp: Date
 ) {
   return `🔔 *New Credit Consumption*
-• Credit ID: \`${salt}\`
 • Beneficiary: \`${sender}\`
 • Amount: \`${ethers.formatEther(value)}\` MANA
 • Block: \`${block}\`
