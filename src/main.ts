@@ -179,8 +179,10 @@ initSlack()
               block: consumption.block,
             });
 
+            console.log("ctx.isHead", ctx.isHead);
+
             // Send Slack notification for real-time consumption events (ctx.isHead)
-            if (ctx.isHead && slackComponent) {
+            if (slackComponent) {
               try {
                 const lastNotified = await getLastNotified(ctx.store);
                 if (lastNotified && lastNotified >= block.header.height) {
