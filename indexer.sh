@@ -5,6 +5,7 @@ CURRENT_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 NEW_SCHEMA_NAME="credits_squid_${CURRENT_TIMESTAMP}"
 NEW_DB_USER="credits_squid_user_${CURRENT_TIMESTAMP}"
 CREDITS_SERVER_API_READER_USER="credits_server_user"
+SQUIDS_PUBLIC_TABLE="squids"
 
 # Check if required environment variables are set
 if [ -z "$DB_USER" ] || [ -z "$DB_NAME" ] || [ -z "$DB_PASSWORD" ] || [ -z "$DB_HOST" ] || [ -z "$DB_PORT" ]; then
@@ -45,6 +46,9 @@ psql -v ON_ERROR_STOP=1 --username "$DB_USER" --dbname "$DB_NAME" --host "$DB_HO
   -- Set default privileges for tables created by NEW_DB_USER
   ALTER DEFAULT PRIVILEGES FOR ROLE $NEW_DB_USER IN SCHEMA $NEW_SCHEMA_NAME
     GRANT SELECT ON TABLES TO $CREDITS_SERVER_API_READER_USER;
+
+  -- Grant insert/update to squid public table
+  GRANT SELECT, INSERT, UPDATE ON TABLE $SQUIDS_PUBLIC_TABLE TO $NEW_DB_USER;
 
   -- Insert a new record into the indexers table
   INSERT INTO public.indexers (service, schema, db_user, created_at)
