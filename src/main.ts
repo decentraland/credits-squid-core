@@ -11,7 +11,6 @@ import {
   setLastNotified,
 } from "./slack";
 
-// TODO: Replace with actual contract.
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
 const CREDITS_CONTRACT_ADDRESS = isMainnet
