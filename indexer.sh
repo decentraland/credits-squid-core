@@ -2,8 +2,8 @@
 
 # Generate a unique schema name and user credentials using a timestamp
 CURRENT_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-NEW_SCHEMA_NAME="credits_squid_${CURRENT_TIMESTAMP}"
-NEW_DB_USER="credits_squid_user_${CURRENT_TIMESTAMP}"
+NEW_SCHEMA_NAME="squid_credits_${CURRENT_TIMESTAMP}"
+NEW_DB_USER="squid_credits_user_${CURRENT_TIMESTAMP}"
 CREDITS_SERVER_API_READER_USER="credits_server_user"
 SQUIDS_PUBLIC_TABLE="squids"
 

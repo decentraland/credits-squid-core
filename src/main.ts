@@ -2,7 +2,8 @@ import { assertNotNull, EvmBatchProcessor } from "@subsquid/evm-processor";
 import { TypeormDatabase } from "@subsquid/typeorm-store";
 import { CreditConsumption } from "./model";
 import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
-import { events } from "./abi/credits";
+import { events as CreditsEvents } from "./abi/credits";
+import { events as ERC20Events } from "./abi/erc20";
 import {
   createSlackComponent,
   getCreditUsedMessage,
@@ -10,8 +11,20 @@ import {
   ISlackComponent,
   setLastNotified,
 } from "./slack";
+import {
+  updateUserStats,
+  updateHourlyStats,
+  updateDailyStats,
+  updateUniqueUserCounts,
+  getUniqueConsumptions,
+  logEntitiesToSave,
+} from "./stats";
 
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
+
+const MANA_CONTRACT_ADDRESS = isMainnet
+  ? "0xa1c57f48f0deb89f569dfbe6e2b7f46d33606fd4"
+  : "0x7ad72b9f944ea9793cf4055d88f81138cc2c63a0";
 
 const CREDITS_CONTRACT_ADDRESS = isMainnet
   ? "0x6a03991dfa9d661ef7ad3c6f88b31f16e5a282cf"
@@ -61,8 +74,12 @@ const processor = new EvmBatchProcessor()
     },
   })
   .addLog({
+    address: [MANA_CONTRACT_ADDRESS],
+    topic0: [ERC20Events.Transfer.topic],
+  })
+  .addLog({
     address: [CREDITS_CONTRACT_ADDRESS],
-    topic0: [events.CreditUsed.topic],
+    topic0: [CreditsEvents.CreditUsed.topic],
   });
 
 const schemaName = process.env.DB_SCHEMA;
@@ -92,13 +109,13 @@ initSlack()
         for (let log of block.logs) {
           if (
             log.address === CREDITS_CONTRACT_ADDRESS &&
-            log.topics[0] === events.CreditUsed.topic
+            log.topics[0] === CreditsEvents.CreditUsed.topic
           ) {
             const {
               _sender,
               _value,
               _credit: { salt },
-            } = events.CreditUsed.decode(log);
+            } = CreditsEvents.CreditUsed.decode(log);
 
             console.log({
               event: "CreditUsed",
@@ -126,39 +143,14 @@ initSlack()
 
             const timestamp = new Date(block.header.timestamp);
 
-            // Get or create UserCreditStats
-            let userStat = userStats.get(_sender);
-            if (!userStat) {
-              const existingStats = await ctx.store.get(
-                UserCreditStats,
-                _sender
-              );
-              console.log(
-                existingStats
-                  ? `Found existing stats for user ${_sender}`
-                  : `Creating new stats for user ${_sender}`
-              );
-
-              userStat =
-                existingStats ||
-                new UserCreditStats({
-                  id: _sender,
-                  address: _sender,
-                  totalCreditsConsumed: 0n,
-                });
-              userStats.set(_sender, userStat);
-            }
-
-            const oldTotal = userStat.totalCreditsConsumed;
-            userStat.totalCreditsConsumed += _value;
-            userStat.lastCreditUsage = timestamp;
-
-            console.log(`Updated user stats:`, {
-              user: _sender,
-              oldTotal: oldTotal.toString(),
-              newTotal: userStat.totalCreditsConsumed.toString(),
-              lastUsage: userStat.lastCreditUsage,
-            });
+            // Get or update user stats
+            const userStat = await updateUserStats(
+              ctx.store,
+              userStats,
+              _sender,
+              _value,
+              timestamp
+            );
 
             // Create credit consumption record with the unique ID
             const consumption = new CreditConsumption({
@@ -179,13 +171,11 @@ initSlack()
               block: consumption.block,
             });
 
-            console.log("ctx.isHead", ctx.isHead);
-
             // Send Slack notification for real-time consumption events (ctx.isHead)
             if (slackComponent) {
               try {
                 const lastNotified = await getLastNotified(ctx.store);
-                if (lastNotified && lastNotified >= block.header.height) {
+                if (lastNotified && lastNotified > block.header.height) {
                   console.log(
                     `Skipping notification for block ${block.header.height} because it was already notified`
                   );
@@ -211,85 +201,17 @@ initSlack()
               }
             }
 
-            // Update hourly usage
-            const hourKey = `${timestamp.getUTCFullYear()}-${String(
-              timestamp.getUTCMonth() + 1
-            ).padStart(2, "0")}-${String(timestamp.getUTCDate()).padStart(
-              2,
-              "0"
-            )}-${String(timestamp.getUTCHours()).padStart(2, "0")}`;
-            let hourUsage = hourlyUsage.get(hourKey);
-            if (!hourUsage) {
-              hourUsage =
-                (await ctx.store.get(HourlyCreditUsage, hourKey)) ||
-                new HourlyCreditUsage({
-                  id: hourKey,
-                  totalAmount: 0n,
-                  usageCount: 0,
-                  timestamp,
-                });
-            }
-            hourUsage.totalAmount += _value;
-            hourUsage.usageCount += 1;
-            hourlyUsage.set(hourKey, hourUsage);
-            console.log("Updated hourly stats:", {
-              hour: hourKey,
-              totalAmount: hourUsage.totalAmount.toString(),
-              usageCount: hourUsage.usageCount,
-            });
+            // Update hourly usage stats
+            await updateHourlyStats(ctx.store, hourlyUsage, timestamp, _value);
 
-            // Update daily usage
-            const dayKey = `${timestamp.getUTCFullYear()}-${String(
-              timestamp.getUTCMonth() + 1
-            ).padStart(2, "0")}-${String(timestamp.getUTCDate()).padStart(
-              2,
-              "0"
-            )}`;
-            let dayUsage = dailyUsage.get(dayKey);
-            if (!dayUsage) {
-              dayUsage =
-                (await ctx.store.get(DailyCreditUsage, dayKey)) ||
-                new DailyCreditUsage({
-                  id: dayKey,
-                  totalAmount: 0n,
-                  uniqueUsers: 0,
-                  usageCount: 0,
-                  timestamp,
-                });
-            }
-            dayUsage.totalAmount += _value;
-            dayUsage.usageCount += 1;
-            dailyUsage.set(dayKey, dayUsage);
-            console.log("Updated daily stats:", {
-              day: dayKey,
-              totalAmount: dayUsage.totalAmount.toString(),
-              usageCount: dayUsage.usageCount,
-            });
+            // Update daily usage stats
+            await updateDailyStats(ctx.store, dailyUsage, timestamp, _value);
           }
         }
       }
 
-      // Only log unique users if we have any daily usage
-      if (dailyUsage.size > 0) {
-        console.log("\nUpdating daily unique users counts...");
-        for (let [dayKey, usage] of dailyUsage) {
-          const uniqueUsers = new Set(
-            consumptions
-              .filter((c) => {
-                const d = c.timestamp;
-                return (
-                  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
-                    2,
-                    "0"
-                  )}-${String(d.getUTCDate()).padStart(2, "0")}` === dayKey
-                );
-              })
-              .map((c) => c.beneficiary.id)
-          );
-          usage.uniqueUsers = uniqueUsers.size;
-          console.log(`Day ${dayKey}: ${usage.uniqueUsers} unique users`);
-        }
-      }
+      // Update unique users count for daily usage
+      updateUniqueUserCounts(dailyUsage, consumptions);
 
       // Only log and save if we have entities to save
       const hasEntities =
@@ -299,32 +221,11 @@ initSlack()
         consumptions.length > 0;
 
       if (hasEntities) {
-        console.log("\nSaving entities to database...");
-        console.log(`- ${userStats.size} user stats`);
-        console.log(`- ${hourlyUsage.size} hourly records`);
-        console.log(`- ${dailyUsage.size} daily records`);
-        console.log(`- ${consumptions.length} consumption records`);
+        // Log detailed entity information
+        logEntitiesToSave(userStats, hourlyUsage, dailyUsage, consumptions);
 
-        // Final check for duplicate consumption records
-        const consumptionIds = new Set<string>();
-        const uniqueConsumptions = consumptions.filter((c) => {
-          if (consumptionIds.has(c.id)) {
-            console.log(
-              `WARNING: Removing duplicate consumption record with ID ${c.id} before saving`
-            );
-            return false;
-          }
-          consumptionIds.add(c.id);
-          return true;
-        });
-
-        if (uniqueConsumptions.length !== consumptions.length) {
-          console.log(
-            `WARNING: Removed ${
-              consumptions.length - uniqueConsumptions.length
-            } duplicate consumption records`
-          );
-        }
+        // Get unique consumptions (removing any duplicates)
+        const uniqueConsumptions = getUniqueConsumptions(consumptions);
 
         await ctx.store.save([...userStats.values()]);
         await ctx.store.save([...hourlyUsage.values()]);
