@@ -1,4 +1,5 @@
 export * from "./creditConsumption.model"
+export * from "./manaTransaction.model"
 export * from "./userCreditStats.model"
 export * from "./hourlyCreditUsage.model"
 export * from "./dailyCreditUsage.model"

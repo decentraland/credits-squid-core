@@ -19,6 +19,12 @@ import {
   getUniqueConsumptions,
   logEntitiesToSave,
 } from "./stats";
+import {
+  processManaTransfer,
+  registerCreditConsumption,
+  processPendingCorrelations,
+} from "./mana";
+import { formatMana } from "./utils";
 
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
@@ -50,12 +56,12 @@ async function initSlack() {
         botToken: process.env.SLACK_BOT_TOKEN,
         signingSecret: process.env.SLACK_SIGNING_SECRET,
       });
-      console.log("Slack component initialized successfully");
+      console.log("[SLACK] Component initialized successfully");
     } else {
-      console.log("Slack credentials not provided, notifications disabled");
+      console.log("[SLACK] Credentials not provided, notifications disabled");
     }
   } catch (error) {
-    console.error("Failed to initialize Slack component:", error);
+    console.error("[SLACK] ERROR: Failed to initialize component:", error);
   }
 }
 
@@ -95,7 +101,7 @@ initSlack()
   .then(() => {
     processor.run(db, async (ctx) => {
       console.log(
-        `Batch range: ${ctx.blocks[0]?.header.height} -> ${
+        `[PROCESSOR] Batch range: ${ctx.blocks[0]?.header.height} -> ${
           ctx.blocks[ctx.blocks.length - 1]?.header.height
         }`
       );
@@ -107,6 +113,27 @@ initSlack()
 
       for (let block of ctx.blocks) {
         for (let log of block.logs) {
+          // Process MANA transfers
+          if (
+            log.address === MANA_CONTRACT_ADDRESS &&
+            log.topics[0] === ERC20Events.Transfer.topic
+          ) {
+            const { from, to, value } = ERC20Events.Transfer.decode(log);
+            const timestamp = new Date(block.header.timestamp);
+
+            processManaTransfer(
+              ctx.store,
+              log,
+              from,
+              to,
+              value,
+              timestamp,
+              block.header.height,
+              CREDITS_CONTRACT_ADDRESS
+            );
+          }
+
+          // Process Credit Usage
           if (
             log.address === CREDITS_CONTRACT_ADDRESS &&
             log.topics[0] === CreditsEvents.CreditUsed.topic
@@ -117,17 +144,17 @@ initSlack()
               _credit: { salt },
             } = CreditsEvents.CreditUsed.decode(log);
 
-            console.log({
-              event: "CreditUsed",
-              creditId: salt,
-              beneficiary: _sender,
-              amount: _value.toString(),
-              blockNumber: block.header.height,
-              txHash: log.transactionHash,
-            });
+            const txHash =
+              log.transactionHash ||
+              `unknown-${block.header.height}-${log.logIndex}`;
+
+            // Format MANA value for logs
+            const formattedMana = formatMana(_value);
+            
+            console.log(`[CREDITS] Used: id=${salt.substring(0, 8)}..., beneficiary=${_sender.substring(0, 8)}..., amount=${formattedMana}, block=${block.header.height}`);
 
             // Create a unique consumptionId that includes tx details to allow multiple consumptions of the same credit
-            const consumptionId = `${salt}-${block.header.height}-${log.transactionHash}`;
+            const consumptionId = `${salt}-${block.header.height}-${txHash}`;
 
             // Check if this specific consumption already exists in database
             const existingConsumption = await ctx.store.get(
@@ -136,7 +163,7 @@ initSlack()
             );
             if (existingConsumption) {
               console.log(
-                `Consumption record with ID ${consumptionId} already exists in database, skipping event processing`
+                `[CREDITS] ERROR: Consumption ${consumptionId.substring(0, 8)}... already exists in database, skipping`
               );
               continue;
             }
@@ -161,15 +188,12 @@ initSlack()
               amount: _value,
               timestamp,
               block: block.header.height,
-              txHash: log.transactionHash,
+              txHash,
             });
             consumptions.push(consumption);
-            console.log("Created consumption record:", {
-              id: consumption.id,
-              creditId: salt,
-              amount: consumption.amount.toString(),
-              block: consumption.block,
-            });
+
+            // Register for correlation with MANA transfers
+            await registerCreditConsumption(ctx.store, consumption);
 
             // Send Slack notification for real-time consumption events (ctx.isHead)
             if (slackComponent) {
@@ -177,7 +201,7 @@ initSlack()
                 const lastNotified = await getLastNotified(ctx.store);
                 if (lastNotified && lastNotified > block.header.height) {
                   console.log(
-                    `Skipping notification for block ${block.header.height} because it was already notified`
+                    `[SLACK] Skipping notification for block ${block.header.height} (already notified)`
                   );
                   continue;
                 }
@@ -188,16 +212,16 @@ initSlack()
                     _sender,
                     _value,
                     block.header.height,
-                    log.transactionHash,
+                    txHash,
                     timestamp
                   )
                 );
                 await setLastNotified(ctx.store, BigInt(block.header.height));
                 console.log(
-                  `Sent Slack notification for consumption ${consumptionId}`
+                  `[SLACK] Sent notification for consumption ${consumptionId.substring(0, 8)}...`
                 );
               } catch (error) {
-                console.error(`Failed to send Slack notification:`, error);
+                console.error(`[SLACK] ERROR: Failed to send notification:`, error);
               }
             }
 
@@ -232,11 +256,16 @@ initSlack()
         await ctx.store.save([...dailyUsage.values()]);
         await ctx.store.save(uniqueConsumptions);
 
-        console.log("Batch processing complete! ✨\n");
+        // Process any pending MANA transfer correlations
+        console.log(`[PROCESSOR] Processing MANA transfer correlations`);
+
+        await processPendingCorrelations(ctx.store);
+        
+        console.log(`[PROCESSOR] Batch processing complete with ${uniqueConsumptions.length} consumptions and ${userStats.size} updated users`);
       }
     });
   })
   .catch((err) => {
-    console.error("Failed to start processor:", err);
+    console.error("[PROCESSOR] ERROR: Failed to start processor:", err);
     process.exit(1);
   });

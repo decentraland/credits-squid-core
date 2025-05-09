@@ -13,6 +13,23 @@ type CreditConsumption @entity {
 }
 
 """
+Tracks MANA transactions correlated with credit usage
+"""
+type ManaTransaction @entity {
+  id: ID! # Transaction hash + event index
+  txHash: String! @index # Transaction hash
+  fromAddress: String! @index # Sender of MANA
+  toAddress: String! @index # Receiver of MANA
+  totalManaAmount: BigInt! # Total MANA amount in the transaction
+  creditAmount: BigInt # Amount of credits used (if applicable)
+  userPaidAmount: BigInt # Amount paid directly by the user
+  daoFeeAmount: BigInt # Amount of MANA paid as DAO fee
+  relatedConsumptionIds: [String!] # Array of related credit consumption IDs
+  timestamp: DateTime! # When the transaction occurred
+  block: Int! # Block number
+}
+
+"""
 Tracks aggregated credit usage per user
 """
 type UserCreditStats @entity {
