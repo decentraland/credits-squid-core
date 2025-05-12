@@ -5,7 +5,7 @@
  */
 export function formatMana(wei: bigint): string {
   const mana = Number(wei) / 1e18;
-  return `${wei.toString()} wei (${mana.toFixed(2)} MANA)`;
+  return `${wei.toString()} wei (${mana.toFixed(5)} MANA)`;
 }
 
 /**

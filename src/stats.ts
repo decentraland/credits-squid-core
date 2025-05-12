@@ -21,10 +21,12 @@ export async function updateUserStats(
 
   if (!userStat) {
     const existingStats = await store.get(UserCreditStats, address);
-    
+
     // Only log if it's a new user
     if (!existingStats) {
-      console.log(`[STATS] New user ${address.substring(0, 8)}... consuming ${formatMana(amount)}`);
+      console.log(
+        `[STATS] New user ${address} consuming ${formatMana(amount)}`
+      );
     }
 
     userStat =
@@ -147,41 +149,16 @@ export function updateUniqueUserCounts(
     const userIds = matchingConsumptions.map((c) => c.beneficiary.id);
     const uniqueUsers = new Set(userIds);
     usage.uniqueUsers = uniqueUsers.size;
-    
-    // Only log significant days with multiple users
-    if (usage.uniqueUsers > 5) {
-      console.log(`[STATS] Day ${dayKey}: ${usage.uniqueUsers} unique users, ${usage.usageCount} consumptions, ${formatMana(usage.totalAmount)} total`);
-    }
-  }
-}
 
-/**
- * Filters out duplicate consumption records before saving
- */
-export function getUniqueConsumptions(
-  consumptions: CreditConsumption[]
-): CreditConsumption[] {
-  const consumptionIds = new Set<string>();
-  const uniqueConsumptions = consumptions.filter((c) => {
-    if (consumptionIds.has(c.id)) {
+    // Only log significant days with multiple users and only first 6 characters of the day key
+    if (usage.uniqueUsers > 10) {
       console.log(
-        `[STATS] ERROR: Removing duplicate consumption record with ID ${c.id.substring(0, 8)}... before saving`
+        `[STATS] ${dayKey}: ${usage.uniqueUsers} users, ${formatMana(
+          usage.totalAmount
+        )} total`
       );
-      return false;
     }
-    consumptionIds.add(c.id);
-    return true;
-  });
-
-  if (uniqueConsumptions.length !== consumptions.length) {
-    console.log(
-      `[STATS] WARNING: Filtered out ${
-        consumptions.length - uniqueConsumptions.length
-      } duplicate consumptions`
-    );
   }
-
-  return uniqueConsumptions;
 }
 
 /**
@@ -193,33 +170,34 @@ export function logEntitiesToSave(
   dailyUsage: Map<string, DailyCreditUsage>,
   consumptions: CreditConsumption[]
 ): void {
-  if (userStats.size === 0 && hourlyUsage.size === 0 && dailyUsage.size === 0 && consumptions.length === 0) {
+  if (
+    userStats.size === 0 &&
+    hourlyUsage.size === 0 &&
+    dailyUsage.size === 0 &&
+    consumptions.length === 0
+  ) {
     return;
   }
 
-  console.log(
-    `[STATS] Saving ${userStats.size} users, ${hourlyUsage.size} hourly stats, ${
-      dailyUsage.size
-    } daily stats, and ${consumptions.length} consumptions`
-  );
-  
-  // Log total MANA consumption
-  if (consumptions.length > 0) {
-    const totalMana = consumptions.reduce((sum, c) => sum + c.amount, 0n);
-    console.log(`[STATS] Total consumption in batch: ${formatMana(totalMana)}`);
-  }
+  const totalMana = consumptions.reduce((sum, c) => sum + c.amount, 0n);
 
-  // Only log detailed user stats for significant batches
-  if (userStats.size > 5) {
+  // Log a condensed summary
+  console.log(
+    `[STATS] 📊 ${userStats.size} users | ${
+      consumptions.length
+    } consumptions | ${formatMana(totalMana)} MANA`
+  );
+
+  // Only log detailed user stats for significant batches with many users
+  if (userStats.size > 10) {
     const topUsers = Array.from(userStats.values())
       .sort((a, b) => Number(b.totalCreditsConsumed - a.totalCreditsConsumed))
       .slice(0, 3);
 
-    console.log(`[STATS] Top users by total consumption:`);
-    topUsers.forEach((user, i) => {
-      console.log(
-        `[STATS]   ${i + 1}. ${user.id.substring(0, 8)}...: ${formatMana(user.totalCreditsConsumed)}`
-      );
-    });
+    console.log(
+      `[STATS] Top users: ${topUsers
+        .map((u) => `${u.id} (${formatMana(u.totalCreditsConsumed)})`)
+        .join(", ")}`
+    );
   }
 }
