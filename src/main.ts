@@ -1,6 +1,6 @@
 import { assertNotNull, EvmBatchProcessor } from "@subsquid/evm-processor";
 import { TypeormDatabase } from "@subsquid/typeorm-store";
-import { CreditConsumption } from "./model";
+import { CreditConsumption, ManaTransaction } from "./model";
 import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
 import { events as CreditsEvents } from "./abi/credits";
 import { events as ERC20Events } from "./abi/erc20";
@@ -20,9 +20,8 @@ import {
   logEntitiesToSave,
 } from "./stats";
 import {
-  processManaTransfer,
-  registerCreditConsumption,
-  processPendingCorrelations,
+  findManaTransfersInBlock,
+  createManaTransactions,
 } from "./mana";
 import { formatMana } from "./utils";
 
@@ -110,30 +109,28 @@ initSlack()
       const userStats = new Map<string, UserCreditStats>();
       const hourlyUsage = new Map<string, HourlyCreditUsage>();
       const dailyUsage = new Map<string, DailyCreditUsage>();
+      
+      // Store MANA transfers and credit consumptions by transaction hash
+      const manaTransfersByTx = new Map<string, any[]>();
+      const creditConsumptionsByTx = new Map<string, CreditConsumption[]>();
+      const pendingManaTransactions = new Map<string, ManaTransaction>();
 
       for (let block of ctx.blocks) {
+        // Create a map of txHash -> logs for this block to efficiently find MANA transfers
+        const logsByTxHash = new Map<string, any[]>();
+        
         for (let log of block.logs) {
-          // Process MANA transfers
-          if (
-            log.address === MANA_CONTRACT_ADDRESS &&
-            log.topics[0] === ERC20Events.Transfer.topic
-          ) {
-            const { from, to, value } = ERC20Events.Transfer.decode(log);
-            const timestamp = new Date(block.header.timestamp);
-
-            processManaTransfer(
-              ctx.store,
-              log,
-              from,
-              to,
-              value,
-              timestamp,
-              block.header.height,
-              CREDITS_CONTRACT_ADDRESS
-            );
+          const txHash = log.transactionHash || `unknown-${block.header.height}-${log.logIndex}`;
+          
+          if (!logsByTxHash.has(txHash)) {
+            logsByTxHash.set(txHash, []);
           }
-
-          // Process Credit Usage
+          logsByTxHash.get(txHash)!.push(log);
+        }
+        
+        // Now process each log looking for credit usage events
+        for (let log of block.logs) {
+          // Only process Credit Usage events
           if (
             log.address === CREDITS_CONTRACT_ADDRESS &&
             log.topics[0] === CreditsEvents.CreditUsed.topic
@@ -144,16 +141,14 @@ initSlack()
               _credit: { salt },
             } = CreditsEvents.CreditUsed.decode(log);
 
-            const txHash =
-              log.transactionHash ||
-              `unknown-${block.header.height}-${log.logIndex}`;
-
+            const txHash = log.transactionHash || `unknown-${block.header.height}-${log.logIndex}`;
+            
             // Format MANA value for logs
             const formattedMana = formatMana(_value);
             
-            console.log(`[CREDITS] Used: id=${salt.substring(0, 8)}..., beneficiary=${_sender.substring(0, 8)}..., amount=${formattedMana}, block=${block.header.height}`);
+            console.log(`[CREDITS] 💸 Used: id=${salt.substring(0, 8)}..., beneficiary=${_sender}, amount=${formattedMana}, block=${block.header.height}`);
 
-            // Create a unique consumptionId that includes tx details to allow multiple consumptions of the same credit
+            // Create a unique consumptionId that includes tx details
             const consumptionId = `${salt}-${block.header.height}-${txHash}`;
 
             // Check if this specific consumption already exists in database
@@ -161,6 +156,7 @@ initSlack()
               CreditConsumption,
               consumptionId
             );
+            
             if (existingConsumption) {
               console.log(
                 `[CREDITS] ERROR: Consumption ${consumptionId.substring(0, 8)}... already exists in database, skipping`
@@ -179,7 +175,7 @@ initSlack()
               timestamp
             );
 
-            // Create credit consumption record with the unique ID
+            // Create credit consumption record
             const consumption = new CreditConsumption({
               id: consumptionId,
               creditId: salt,
@@ -190,12 +186,39 @@ initSlack()
               block: block.header.height,
               txHash,
             });
+            
             consumptions.push(consumption);
+            
+            // Add to consumptions by txHash map
+            if (!creditConsumptionsByTx.has(txHash)) {
+              creditConsumptionsByTx.set(txHash, []);
+            }
+            creditConsumptionsByTx.get(txHash)!.push(consumption);
 
-            // Register for correlation with MANA transfers
-            await registerCreditConsumption(ctx.store, consumption);
+            // Find all MANA transfers in this transaction
+            if (logsByTxHash.has(txHash)) {
+              const manaTransfers = findManaTransfersInBlock(
+                logsByTxHash.get(txHash)!,
+                MANA_CONTRACT_ADDRESS,
+                ERC20Events,
+                timestamp,
+                block.header.height
+              );
+              
+              if (manaTransfers.length > 0) {
+                if (!manaTransfersByTx.has(txHash)) {
+                  manaTransfersByTx.set(txHash, []);
+                }
+                
+                // Add these transfers to our map
+                manaTransfersByTx.set(txHash, [
+                  ...(manaTransfersByTx.get(txHash) || []),
+                  ...manaTransfers
+                ]);
+              }
+            }
 
-            // Send Slack notification for real-time consumption events (ctx.isHead)
+            // Send Slack notification for real-time consumption events
             if (slackComponent) {
               try {
                 const lastNotified = await getLastNotified(ctx.store);
@@ -245,21 +268,30 @@ initSlack()
         consumptions.length > 0;
 
       if (hasEntities) {
+        // Create MANA transactions by correlating transfers with consumptions
+        const manaTransactions = createManaTransactions(
+          manaTransfersByTx,
+          creditConsumptionsByTx,
+          ctx.store
+        );
+        
         // Log detailed entity information
         logEntitiesToSave(userStats, hourlyUsage, dailyUsage, consumptions);
+        console.log(`[MANA] Created ${manaTransactions.length} MANA transactions`);
 
         // Get unique consumptions (removing any duplicates)
         const uniqueConsumptions = getUniqueConsumptions(consumptions);
 
+        // Save all entities at once
         await ctx.store.save([...userStats.values()]);
         await ctx.store.save([...hourlyUsage.values()]);
         await ctx.store.save([...dailyUsage.values()]);
         await ctx.store.save(uniqueConsumptions);
-
-        // Process any pending MANA transfer correlations
-        console.log(`[PROCESSOR] Processing MANA transfer correlations`);
-
-        await processPendingCorrelations(ctx.store);
+        
+        // Save all MANA transactions
+        if (manaTransactions.length > 0) {
+          await ctx.store.save(manaTransactions);
+        }
         
         console.log(`[PROCESSOR] Batch processing complete with ${uniqueConsumptions.length} consumptions and ${userStats.size} updated users`);
       }
