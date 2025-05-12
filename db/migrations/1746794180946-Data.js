@@ -60,7 +60,7 @@ module.exports = class Data1746794180946 {
       `ALTER TABLE "marketplace_credit_usage" ADD CONSTRAINT "FK_e5647789223aecfbf3780e1581e" FOREIGN KEY ("credit_consumption_id") REFERENCES "credit_consumption"("id") ON DELETE NO ACTION ON UPDATE NO ACTION`
     );
     await db.query(
-      `CREATE TRIGGER credit_consumption_changes_trigger AFTER INSERT OR UPDATE OR DELETE ON credit_consumption FOR EACH ROW EXECUTE FUNCTION notify_credit_changes();`
+      `CREATE TRIGGER credit_consumption_changes_trigger AFTER INSERT OR UPDATE OR DELETE ON credit_consumption FOR EACH ROW EXECUTE FUNCTION public.notify_credit_changes();`
     );
   }
 
