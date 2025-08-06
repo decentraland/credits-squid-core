@@ -48,6 +48,10 @@ const GATEWAY = isMainnet
 
 const FROM_BLOCK = isMainnet ? 70459461 : 20612932;
 
+const FINALITY_CONFIRMATION = parseInt(
+  process.env.FINALITY_CONFIRMATION_POLYGON || "75"
+);
+
 // Initialize Slack component
 let slackComponent: ISlackComponent | undefined;
 
@@ -74,7 +78,7 @@ const processor = new EvmBatchProcessor()
     rateLimit: 10,
   })
   .setPrometheusPort(PROMETHEUS_PORT)
-  .setFinalityConfirmation(75)
+  .setFinalityConfirmation(FINALITY_CONFIRMATION)
   .setBlockRange({ from: FROM_BLOCK })
   .setFields({
     log: {
