@@ -3,7 +3,7 @@
   "commands": {
     "run:credits": {
       "description": "run credits squid",
-      "cmd": ["sqd", "run", ".", "-r", "10000000"]
+      "cmd": ["sqd", "run", ".", "-r", "100000"]
     },
     "clean": {
       "description": "delete all build artifacts",
