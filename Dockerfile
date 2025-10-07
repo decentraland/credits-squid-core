@@ -45,6 +45,7 @@ RUN apk update && apk add --no-cache tini postgresql-client curl jq python3 py3-
     && rm -rf /var/cache/apk/*
 
 ENV PROMETHEUS_PORT 3001
+ENV GQL_PORT 5000
 
 RUN touch /squid/.env
 
