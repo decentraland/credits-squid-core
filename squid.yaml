@@ -11,6 +11,8 @@ deploy:
     postgres:
   processor:
     cmd: ["node", "lib/main"]
+  api:
+    cmd: ["sqd", "serve:prod"]
 
 database:
   schema: "./schema.graphql"
