@@ -40,7 +40,7 @@ export const DAO_ADDRESS = "0xb08e3e7cc815213304d884c88ca476ebc50eaab2";
 
 export const CREDITS_CONTRACT_ADDRESS = isMainnet
   ? "0xe9f961e6ded4e1476bbee4faab886d63a2493eb9"
-  : "0x1985fa82b531cb4e20f103787eba99de67b5c25c";
+  : "0x037566bc90f85e76587e1b07f9184585f09c1420";
 
 const GATEWAY = isMainnet
   ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
