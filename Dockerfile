@@ -23,6 +23,11 @@ RUN npm ci --production
 
 FROM node AS squid
 WORKDIR /squid
+
+# Add build argument for commit hash
+ARG COMMIT_HASH=local
+ENV COMMIT_HASH=${COMMIT_HASH:-local}
+
 COPY --from=deps /squid/package.json .
 COPY --from=deps /squid/package-lock.json .
 COPY --from=deps /squid/node_modules node_modules
