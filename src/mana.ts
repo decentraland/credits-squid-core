@@ -6,7 +6,7 @@ import { events as ERC20Events } from "./abi/erc20";
 import {
   DAO_ADDRESS,
   MANA_CONTRACT_ADDRESS,
-  CREDITS_CONTRACT_ADDRESS,
+  CREDITS_CONTRACT_ADDRESSES,
 } from "./main";
 import { ManaTransfer } from "./types";
 
@@ -37,8 +37,10 @@ export function findManaTransfersInBlock(
         const normalizedTo = to.toLowerCase();
 
         // Determine if this is a credit-related transfer
-        const isFromCreditManager = normalizedFrom === CREDITS_CONTRACT_ADDRESS;
-        const isToCreditManager = normalizedTo === CREDITS_CONTRACT_ADDRESS;
+        const isFromCreditManager =
+          CREDITS_CONTRACT_ADDRESSES.includes(normalizedFrom);
+        const isToCreditManager =
+          CREDITS_CONTRACT_ADDRESSES.includes(normalizedTo);
 
         // Check if this is a payment to the DAO FROM the Credit Manager
         const isDaoFee =
@@ -62,7 +64,7 @@ export function findManaTransfersInBlock(
         let toLabel = normalizedTo;
 
         // Add role labels
-        if (normalizedFrom === CREDITS_CONTRACT_ADDRESS) {
+        if (CREDITS_CONTRACT_ADDRESSES.includes(normalizedFrom)) {
           fromLabel = `${normalizedFrom} [CreditsManager]`;
         } else if (isToCreditManager) {
           fromLabel = `${normalizedFrom} [USER]`;
@@ -72,7 +74,7 @@ export function findManaTransfersInBlock(
           toLabel = `${normalizedTo} [DAO]`;
         } else if (isFromCreditManager && !isDaoFee) {
           toLabel = `${normalizedTo} [CREATOR]`;
-        } else if (normalizedTo === CREDITS_CONTRACT_ADDRESS) {
+        } else if (CREDITS_CONTRACT_ADDRESSES.includes(normalizedTo)) {
           toLabel = `${normalizedTo} [CreditsManager]`;
         }
 
