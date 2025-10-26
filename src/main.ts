@@ -38,9 +38,12 @@ export const MANA_CONTRACT_ADDRESS = isMainnet
 // DAO address that receives fees
 export const DAO_ADDRESS = "0xb08e3e7cc815213304d884c88ca476ebc50eaab2";
 
-export const CREDITS_CONTRACT_ADDRESS = isMainnet
-  ? "0xe9f961e6ded4e1476bbee4faab886d63a2493eb9"
-  : "0x1985fa82b531cb4e20f103787eba99de67b5c25c";
+export const CREDITS_CONTRACT_ADDRESSES = isMainnet
+  ? [
+      "0xe9f961e6ded4e1476bbee4faab886d63a2493eb9",
+      "0x8b3a40ca1b6f5cafc99d112a4d02e897d1fd8cc5",
+    ]
+  : ["0x8052a560e6e6ac86eeb7e711a4497f639b322fb3"];
 
 const GATEWAY = isMainnet
   ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
@@ -90,7 +93,7 @@ const processor = new EvmBatchProcessor()
     topic0: [ERC20Events.Transfer.topic],
   })
   .addLog({
-    address: [CREDITS_CONTRACT_ADDRESS],
+    address: CREDITS_CONTRACT_ADDRESSES,
     topic0: [CreditsEvents.CreditUsed.topic],
   });
 
@@ -167,7 +170,7 @@ initSlack()
         for (let log of block.logs) {
           // Process Credit Usage events
           if (
-            log.address === CREDITS_CONTRACT_ADDRESS &&
+            CREDITS_CONTRACT_ADDRESSES.includes(log.address.toLowerCase()) &&
             log.topics[0] === CreditsEvents.CreditUsed.topic
           ) {
             const {
