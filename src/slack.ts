@@ -4,8 +4,15 @@ import { ethers } from "ethers";
 import { EntityManager } from "typeorm";
 import { getCoralScanUrl } from "./coral";
 
+export interface SlackMessageResponse {
+  ok: boolean;
+  ts?: string;
+  channel?: string;
+}
+
 export interface ISlackComponent {
-  sendMessage(channel: string, message: string): Promise<any>;
+  sendMessage(channel: string, message: string): Promise<SlackMessageResponse>;
+  updateMessage(channel: string, ts: string, message: string): Promise<SlackMessageResponse>;
   app: App;
 }
 
@@ -19,18 +26,33 @@ export async function createSlackComponent(config: {
     signingSecret: config.signingSecret,
   });
 
-  function sendMessage(
+  async function sendMessage(
     channel: string,
     message: string
-  ): ReturnType<typeof app.client.chat.postMessage> {
-    return app.client.chat.postMessage({
+  ): Promise<SlackMessageResponse> {
+    const result = await app.client.chat.postMessage({
       channel,
       text: message,
     });
+    return { ok: result.ok ?? false, ts: result.ts, channel: result.channel };
+  }
+
+  async function updateMessage(
+    channel: string,
+    ts: string,
+    message: string
+  ): Promise<SlackMessageResponse> {
+    const result = await app.client.chat.update({
+      channel,
+      ts,
+      text: message,
+    });
+    return { ok: result.ok ?? false, ts: result.ts, channel: result.channel };
   }
 
   return {
     sendMessage,
+    updateMessage,
     app,
   };
 }
@@ -89,7 +111,7 @@ export function getCrossChainCreditMessage(
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
     totalCreditsUsed
   )}\` MANA)
-*MANA Bridged:* \`${ethers.formatEther(manaBridged)}\` MANA
+*WETH Bridged:* \`${ethers.formatEther(manaBridged)}\` WETH
 
 *Order Hash:* \`${orderHash.slice(0, 18)}...\`
 *Squid Status:* \`${squidStatus || "unknown"}\`

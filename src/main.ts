@@ -23,7 +23,24 @@ import {
 import { findManaTransfersInBlock, createManaTransactions } from "./mana";
 import { formatMana } from "./utils";
 import { ManaTransfer } from "./types";
-import { fetchSquidStatus } from "./coral";
+import { fetchSquidStatus, SquidTransactionStatus } from "./coral";
+
+// Pending orders that need polling for Ethereum tx hash
+interface PendingOrderInfo {
+  orderHash: string;
+  polygonTxHash: string;
+  slackTs: string;
+  slackChannel: string;
+  totalCreditsUsed: bigint;
+  wethBridged: bigint;
+  creditCount: number;
+  timestamp: Date;
+  retryCount: number;
+}
+
+const pendingOrders = new Map<string, PendingOrderInfo>();
+const POLLING_INTERVAL_MS = 30000; // 30 seconds
+const MAX_RETRIES = 30; // ~15 minutes max polling
 
 const schemaName = process.env.DB_SCHEMA;
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
@@ -86,6 +103,89 @@ async function initSlack() {
   }
 }
 
+/**
+ * Background polling for pending cross-chain orders
+ * Polls Squid API and updates Slack messages when Ethereum tx is available
+ */
+async function pollPendingOrders() {
+  if (!slackComponent || pendingOrders.size === 0) return;
+
+  for (const [orderHash, info] of pendingOrders.entries()) {
+    try {
+      const { destinationTxHash, status } = await fetchSquidStatus(
+        info.polygonTxHash
+      );
+
+      // Check if we got a final status
+      const isFinal =
+        status === SquidTransactionStatus.SUCCESS ||
+        status === SquidTransactionStatus.PARTIAL_SUCCESS ||
+        status === SquidTransactionStatus.REFUND_STATUS ||
+        status === SquidTransactionStatus.NEEDS_GAS;
+
+      if (destinationTxHash || isFinal) {
+        // Update Slack message with final status
+        const updatedMessage = getCrossChainCreditMessage(
+          info.totalCreditsUsed,
+          info.wethBridged,
+          info.creditCount,
+          info.polygonTxHash,
+          destinationTxHash,
+          orderHash,
+          status,
+          info.timestamp
+        );
+
+        await slackComponent.updateMessage(
+          info.slackChannel,
+          info.slackTs,
+          updatedMessage
+        );
+
+        console.log(
+          `[POLLING] ✅ Updated Slack for order ${orderHash.slice(
+            0,
+            18
+          )}...: status=${status}, ethTx=${
+            destinationTxHash?.slice(0, 18) || "none"
+          }`
+        );
+
+        pendingOrders.delete(orderHash);
+      } else {
+        // Increment retry count
+        info.retryCount++;
+
+        if (info.retryCount >= MAX_RETRIES) {
+          console.log(
+            `[POLLING] ⚠️ Max retries reached for order ${orderHash.slice(
+              0,
+              18
+            )}..., removing from queue`
+          );
+          pendingOrders.delete(orderHash);
+        }
+      }
+    } catch (error) {
+      console.error(
+        `[POLLING] ❌ Error polling order ${orderHash.slice(0, 18)}...:`,
+        error
+      );
+      info.retryCount++;
+      if (info.retryCount >= MAX_RETRIES) {
+        pendingOrders.delete(orderHash);
+      }
+    }
+  }
+}
+
+// Start background polling (non-blocking)
+setInterval(() => {
+  pollPendingOrders().catch((err) =>
+    console.error("[POLLING] Background polling error:", err)
+  );
+}, POLLING_INTERVAL_MS);
+
 const processor = new EvmBatchProcessor()
   .setGateway(GATEWAY)
   .setRpcEndpoint({
@@ -144,6 +244,9 @@ initSlack()
         string,
         { orderHash: string; order: any; log: any }
       >();
+
+      // Track new orders to send Slack notifications at end of batch
+      const newOrderHashes = new Set<string>();
 
       for (let block of ctx.blocks) {
         // Create a map of txHash -> logs for this block to efficiently find MANA transfers
@@ -291,10 +394,8 @@ initSlack()
 
               // Get or create SquidRouterOrder
               let squidOrder = squidRouterOrders.get(orderHashStr);
-              let isNewOrder = false;
 
               if (!squidOrder) {
-                isNewOrder = true;
                 squidOrder = new SquidRouterOrder({
                   id: orderHashStr,
                   orderHash: orderHashStr,
@@ -317,29 +418,7 @@ initSlack()
                   timestamp,
                 });
                 squidRouterOrders.set(orderHashStr, squidOrder);
-
-                // Fetch Squid Router status to get destination (Ethereum) tx hash
-                try {
-                  const { destinationTxHash, status } = await fetchSquidStatus(
-                    txHash
-                  );
-                  squidOrder.destinationTxHash = destinationTxHash;
-                  squidOrder.squidStatus = status;
-
-                  if (destinationTxHash) {
-                    console.log(
-                      `[SQUID API] ✅ Got Ethereum tx: ${destinationTxHash.slice(
-                        0,
-                        18
-                      )}...`
-                    );
-                  }
-                } catch (error) {
-                  console.error(
-                    `[SQUID API] ❌ Failed to fetch status:`,
-                    error
-                  );
-                }
+                newOrderHashes.add(orderHashStr); // Track for Slack notification at end
               }
 
               // Add this credit to the order
@@ -352,39 +431,6 @@ initSlack()
                   squidOrder.creditIds.length
                 } credits, total=${formatMana(squidOrder.totalCreditsUsed)}`
               );
-
-              // Send Slack notification for cross-chain credit usage (only once per order)
-              if (isNewOrder && slackComponent) {
-                try {
-                  const lastNotified = await getLastNotified(ctx.store);
-                  if (!lastNotified || lastNotified <= block.header.height) {
-                    await slackComponent.sendMessage(
-                      SLACK_CROSS_CHAIN_CHANNEL,
-                      getCrossChainCreditMessage(
-                        squidOrder.totalCreditsUsed,
-                        order.fromAmount,
-                        squidOrder.creditIds.length,
-                        txHash,
-                        squidOrder.destinationTxHash,
-                        orderHashStr,
-                        squidOrder.squidStatus,
-                        timestamp
-                      )
-                    );
-                    console.log(
-                      `[SLACK] ✅ Sent cross-chain credit notification for order ${orderHashStr.slice(
-                        0,
-                        18
-                      )}...`
-                    );
-                  }
-                } catch (error) {
-                  console.error(
-                    `[SLACK] ❌ Failed to send cross-chain notification:`,
-                    error
-                  );
-                }
-              }
             }
 
             // Add to consumptions by txHash map
@@ -450,6 +496,89 @@ initSlack()
       const uniqueConsumptions = Array.from(
         new Map(consumptions.map((c: CreditConsumption) => [c.id, c])).values()
       );
+
+      // Process new orders: fetch Squid status and send Slack notifications
+      // This happens AFTER all credits are accumulated
+      for (const orderHashStr of newOrderHashes) {
+        const squidOrder = squidRouterOrders.get(orderHashStr);
+        if (!squidOrder) continue;
+
+        // Fetch Squid Router status to get destination (Ethereum) tx hash
+        try {
+          const { destinationTxHash, status } = await fetchSquidStatus(
+            squidOrder.txHash
+          );
+          squidOrder.destinationTxHash = destinationTxHash;
+          squidOrder.squidStatus = status;
+
+          if (destinationTxHash) {
+            console.log(
+              `[CORAL] ✅ Got Ethereum tx: ${destinationTxHash.slice(0, 18)}...`
+            );
+          }
+        } catch (error) {
+          console.error(`[CORAL] ❌ Failed to fetch status:`, error);
+        }
+
+        // Send Slack notification with all accumulated credits
+        if (slackComponent) {
+          try {
+            const lastNotified = await getLastNotified(ctx.store);
+            if (!lastNotified || lastNotified <= squidOrder.blockNumber) {
+              const slackResult = await slackComponent.sendMessage(
+                SLACK_CROSS_CHAIN_CHANNEL,
+                getCrossChainCreditMessage(
+                  squidOrder.totalCreditsUsed,
+                  squidOrder.fromAmount ?? BigInt(0),
+                  squidOrder.creditIds.length,
+                  squidOrder.txHash,
+                  squidOrder.destinationTxHash,
+                  orderHashStr,
+                  squidOrder.squidStatus,
+                  squidOrder.timestamp
+                )
+              );
+
+              console.log(
+                `[SLACK] ✅ Sent cross-chain notification: ${
+                  squidOrder.creditIds.length
+                } credits, ${formatMana(squidOrder.totalCreditsUsed)}`
+              );
+
+              // If status is ongoing and no destination tx yet, add to polling queue
+              if (
+                slackResult.ts &&
+                slackResult.channel &&
+                (!squidOrder.destinationTxHash ||
+                  squidOrder.squidStatus === SquidTransactionStatus.ONGOING)
+              ) {
+                pendingOrders.set(orderHashStr, {
+                  orderHash: orderHashStr,
+                  polygonTxHash: squidOrder.txHash,
+                  slackTs: slackResult.ts,
+                  slackChannel: slackResult.channel,
+                  totalCreditsUsed: squidOrder.totalCreditsUsed,
+                  wethBridged: squidOrder.fromAmount ?? BigInt(0),
+                  creditCount: squidOrder.creditIds.length,
+                  timestamp: squidOrder.timestamp,
+                  retryCount: 0,
+                });
+                console.log(
+                  `[POLLING] 📥 Added order ${orderHashStr.slice(
+                    0,
+                    18
+                  )}... to polling queue`
+                );
+              }
+            }
+          } catch (error) {
+            console.error(
+              `[SLACK] ❌ Failed to send cross-chain notification:`,
+              error
+            );
+          }
+        }
+      }
 
       // Save all entities to database
       await ctx.store.save([...userStats.values()]);
