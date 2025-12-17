@@ -6,7 +6,8 @@
 // Squid Router API configuration
 const SQUID_ROUTER_API_URL =
   process.env.SQUID_ROUTER_API_URL || "https://v2.api.squidrouter.com";
-const SQUID_INTEGRATOR_ID = process.env.SQUID_INTEGRATOR_ID || "";
+const SQUID_INTEGRATOR_ID =
+  process.env.SQUID_INTEGRATOR_ID || "decentraland-sdk-coral-test";
 
 // Chain IDs
 export const POLYGON_CHAIN_ID = "137";
