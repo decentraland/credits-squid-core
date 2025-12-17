@@ -2,6 +2,7 @@ import { App } from "@slack/bolt";
 import { Store } from "@subsquid/typeorm-store";
 import { ethers } from "ethers";
 import { EntityManager } from "typeorm";
+import { getCoralScanUrl } from "./coral";
 
 export interface ISlackComponent {
   sendMessage(channel: string, message: string): Promise<any>;
@@ -65,4 +66,39 @@ export function getCreditUsedMessage(
 • Block: \`${block}\`
 • Tx Hash: \`${transactionHash}\`
 • Time: \`${timestamp.toISOString()}\``;
+}
+
+export function getCrossChainCreditMessage(
+  totalCreditsUsed: bigint,
+  manaBridged: bigint,
+  creditCount: number,
+  polygonTxHash: string,
+  ethereumTxHash: string | null | undefined,
+  orderHash: string,
+  squidStatus: string | null | undefined,
+  timestamp: Date
+) {
+  const polygonscanUrl = `https://polygonscan.com/tx/${polygonTxHash}`;
+  const etherscanUrl = ethereumTxHash
+    ? `https://etherscan.io/tx/${ethereumTxHash}`
+    : null;
+  const coralScanUrl = getCoralScanUrl(polygonTxHash);
+
+  return `🌉 *Cross-Chain Credit Usage Detected*
+
+*Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
+    totalCreditsUsed
+  )}\` MANA)
+*MANA Bridged:* \`${ethers.formatEther(manaBridged)}\` MANA
+
+*Order Hash:* \`${orderHash.slice(0, 18)}...\`
+*Squid Status:* \`${squidStatus || "unknown"}\`
+
+*Polygon Tx:* <${polygonscanUrl}|View on Polygonscan>
+*Ethereum Tx:* ${
+    etherscanUrl ? `<${etherscanUrl}|View on Etherscan>` : "_Pending..._"
+  }
+*Coral Scan:* <${coralScanUrl}|View on CoralScan>
+
+*Time:* \`${timestamp.toISOString()}\``;
 }

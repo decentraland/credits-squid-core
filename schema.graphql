@@ -10,6 +10,32 @@ type CreditConsumption @entity {
   timestamp: DateTime! # When the credit was consumed
   block: Int! # Block number when consumed
   txHash: String! @index # Transaction hash
+  orderHash: String @index # Optional: Squid Router order hash if this consumption was part of a cross-chain order
+}
+
+"""
+Tracks Squid Router orders that use credits
+"""
+type SquidRouterOrder @entity {
+  id: ID! # orderHash
+  orderHash: String! @index # The unique order hash from Spoke
+  creditIds: [String!]! # Array of credit IDs used in this order
+  totalCreditsUsed: BigInt! # Total credits consumed for this order
+  fromAddress: String! @index # Sender address
+  toAddress: String! @index # Receiver address
+  filler: String # Filler address
+  fromToken: String # Token being sent
+  toToken: String # Token being received
+  fromAmount: BigInt # Amount being sent
+  fillAmount: BigInt # Amount to fill
+  feeRate: BigInt # Fee rate
+  fromChain: BigInt # Source chain ID
+  toChain: BigInt # Destination chain ID
+  txHash: String! @index # Polygon transaction hash (source)
+  destinationTxHash: String @index # Ethereum transaction hash (destination) - populated async from Squid API
+  squidStatus: String # Status from Squid API (success, ongoing, etc.)
+  blockNumber: Int! # Block number
+  timestamp: DateTime! # When the order was created
 }
 
 """
