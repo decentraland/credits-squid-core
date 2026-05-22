@@ -23,7 +23,7 @@ export enum SquidTransactionStatus {
   ONGOING = "ongoing",
   PARTIAL_SUCCESS = "partial_success",
   NOT_FOUND = "not_found",
-  REFUND_STATUS = "refund",
+  REFUND_STATUS = "refunded",
 }
 
 export interface SquidStatusResponse {

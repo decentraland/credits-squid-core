@@ -94,7 +94,7 @@ export function getCreditUsedMessage(
 // PARTIAL_SUCCESS / REFUND / NEEDS_GAS all consume credits on Polygon without producing the expected outcome on Ethereum.
 const ERROR_SQUID_STATUSES = new Set([
   "partial_success",
-  "refund",
+  "refunded",
   "needs_gas",
 ]);
 
