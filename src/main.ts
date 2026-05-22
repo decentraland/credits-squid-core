@@ -46,8 +46,10 @@ const MAX_RETRIES = 30; // ~15 minutes max polling
 
 const schemaName = process.env.DB_SCHEMA;
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
-const SQUID_API_KEY = process.env.SQUID_API_KEY;
-console.log("RPC_ENDPOINT", RPC_ENDPOINT);
+const SQUID_API_KEY = assertNotNull(
+  process.env.SQUID_API_KEY,
+  "SQUID_API_KEY env var is required — the Subsquid gateway returns 403 without it (see https://docs.sqd.dev/v2-keys)"
+);
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
@@ -108,6 +110,43 @@ async function initSlack() {
 }
 
 /**
+ * Update the Slack message for an order whose polling has run out without a destination tx,
+ * tagging the core team so the stalled / unreachable order is investigated.
+ * Credits were consumed on Polygon but Squid never reported a destination tx.
+ */
+async function flagStalledOrder(
+  orderHash: string,
+  info: PendingOrderInfo,
+  lastStatus: string | null | undefined
+) {
+  if (!slackComponent) return;
+  try {
+    const stalledMessage = getCrossChainCreditMessage(
+      info.totalCreditsUsed,
+      info.wethBridged,
+      info.creditCount,
+      info.polygonTxHash,
+      null,
+      orderHash,
+      lastStatus,
+      info.timestamp,
+      info.beneficiary,
+      { isStalled: true, executorAddress: info.executorAddress }
+    );
+    await slackComponent.updateMessage(
+      info.slackChannel,
+      info.slackTs,
+      stalledMessage
+    );
+  } catch (error) {
+    console.error(
+      `[POLLING] ❌ Failed to send stalled-order alert:`,
+      error
+    );
+  }
+}
+
+/**
  * Background polling for pending cross-chain orders
  * Polls Squid API and updates Slack messages when Ethereum tx is available
  */
@@ -115,10 +154,12 @@ async function pollPendingOrders() {
   if (!slackComponent || pendingOrders.size === 0) return;
 
   for (const [orderHash, info] of pendingOrders.entries()) {
+    let lastStatus: string | null | undefined;
     try {
       const { destinationTxHash, status } = await fetchSquidStatus(
         info.polygonTxHash
       );
+      lastStatus = status;
 
       // Check if we got a final status
       const isFinal =
@@ -169,34 +210,7 @@ async function pollPendingOrders() {
               18
             )}..., flagging as stalled`
           );
-
-          // Flag stalled orders so the core team can investigate.
-          // Credits were consumed on Polygon but Squid never reported a destination tx.
-          try {
-            const stalledMessage = getCrossChainCreditMessage(
-              info.totalCreditsUsed,
-              info.wethBridged,
-              info.creditCount,
-              info.polygonTxHash,
-              null,
-              orderHash,
-              status,
-              info.timestamp,
-              info.beneficiary,
-              { isStalled: true, executorAddress: info.executorAddress }
-            );
-            await slackComponent.updateMessage(
-              info.slackChannel,
-              info.slackTs,
-              stalledMessage
-            );
-          } catch (error) {
-            console.error(
-              `[POLLING] ❌ Failed to send stalled-order alert:`,
-              error
-            );
-          }
-
+          await flagStalledOrder(orderHash, info, lastStatus);
           pendingOrders.delete(orderHash);
         }
       }
@@ -207,6 +221,13 @@ async function pollPendingOrders() {
       );
       info.retryCount++;
       if (info.retryCount >= MAX_RETRIES) {
+        console.log(
+          `[POLLING] ⚠️ Max retries reached after persistent errors for order ${orderHash.slice(
+            0,
+            18
+          )}..., flagging as stalled`
+        );
+        await flagStalledOrder(orderHash, info, lastStatus);
         pendingOrders.delete(orderHash);
       }
     }

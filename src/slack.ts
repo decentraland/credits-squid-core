@@ -135,7 +135,7 @@ export function getCrossChainCreditMessage(
     : `🌉 *Cross-Chain Credit Usage Detected*`;
 
   const stalledNote = options.isStalled
-    ? `\n*⚠️ Polling timed out before destination tx was observed.*\n`
+    ? `\n*⚠️ Polling timed out before destination tx was observed.*`
     : "";
 
   // Only surface the executor when it differs from the beneficiary;
@@ -146,8 +146,8 @@ export function getCrossChainCreditMessage(
       ? `\n*Executor:* \`${options.executorAddress}\``
       : "";
 
-  return `${header}
-${stalledNote}
+  return `${header}${stalledNote}
+
 *User:* \`${beneficiary}\`${executorLine}
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
     totalCreditsUsed
