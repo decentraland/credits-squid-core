@@ -90,6 +90,26 @@ export function getCreditUsedMessage(
 • Time: \`${timestamp.toISOString()}\``;
 }
 
+// Squid statuses that indicate the cross-chain bridge did not deliver normally.
+// PARTIAL_SUCCESS / REFUND / NEEDS_GAS all consume credits on Polygon without producing the expected outcome on Ethereum.
+const ERROR_SQUID_STATUSES = new Set([
+  "partial_success",
+  "refund",
+  "needs_gas",
+]);
+
+function isErrorStatus(status: string | null | undefined): boolean {
+  return !!status && ERROR_SQUID_STATUSES.has(status);
+}
+
+// Slack subteam (user group) handle for the core team.
+// Set CORETEAM_SLACK_GROUP_ID to the subteam ID (e.g. "S0123ABCD") so the mention pings real members.
+// If unset, falls back to plain "@coreteam" text — visible but non-pinging.
+function coreTeamMention(): string {
+  const groupId = process.env.CORETEAM_SLACK_GROUP_ID;
+  return groupId ? `<!subteam^${groupId}|@coreteam>` : "@coreteam";
+}
+
 export function getCrossChainCreditMessage(
   totalCreditsUsed: bigint,
   manaBridged: bigint,
@@ -98,7 +118,9 @@ export function getCrossChainCreditMessage(
   ethereumTxHash: string | null | undefined,
   orderHash: string,
   squidStatus: string | null | undefined,
-  timestamp: Date
+  timestamp: Date,
+  beneficiary: string,
+  options: { isStalled?: boolean; executorAddress?: string } = {}
 ) {
   const polygonscanUrl = `https://polygonscan.com/tx/${polygonTxHash}`;
   const etherscanUrl = ethereumTxHash
@@ -106,8 +128,27 @@ export function getCrossChainCreditMessage(
     : null;
   const coralScanUrl = getCoralScanUrl(polygonTxHash);
 
-  return `🌉 *Cross-Chain Credit Usage Detected*
+  const isError = options.isStalled || isErrorStatus(squidStatus);
 
+  const header = isError
+    ? `🚨 *Cross-Chain Credit FAILED* — ${coreTeamMention()}`
+    : `🌉 *Cross-Chain Credit Usage Detected*`;
+
+  const stalledNote = options.isStalled
+    ? `\n*⚠️ Polling timed out before destination tx was observed.*\n`
+    : "";
+
+  // Only surface the executor when it differs from the beneficiary;
+  // otherwise it's noise.
+  const executorLine =
+    options.executorAddress &&
+    options.executorAddress.toLowerCase() !== beneficiary.toLowerCase()
+      ? `\n*Executor:* \`${options.executorAddress}\``
+      : "";
+
+  return `${header}
+${stalledNote}
+*User:* \`${beneficiary}\`${executorLine}
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
     totalCreditsUsed
   )}\` MANA)

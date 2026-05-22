@@ -36,6 +36,8 @@ interface PendingOrderInfo {
   creditCount: number;
   timestamp: Date;
   retryCount: number;
+  beneficiary: string;
+  executorAddress: string;
 }
 
 const pendingOrders = new Map<string, PendingOrderInfo>();
@@ -44,6 +46,8 @@ const MAX_RETRIES = 30; // ~15 minutes max polling
 
 const schemaName = process.env.DB_SCHEMA;
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
+const SQUID_API_KEY = process.env.SQUID_API_KEY;
+console.log("RPC_ENDPOINT", RPC_ENDPOINT);
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
@@ -133,7 +137,9 @@ async function pollPendingOrders() {
           destinationTxHash,
           orderHash,
           status,
-          info.timestamp
+          info.timestamp,
+          info.beneficiary,
+          { executorAddress: info.executorAddress }
         );
 
         await slackComponent.updateMessage(
@@ -161,8 +167,36 @@ async function pollPendingOrders() {
             `[POLLING] ⚠️ Max retries reached for order ${orderHash.slice(
               0,
               18
-            )}..., removing from queue`
+            )}..., flagging as stalled`
           );
+
+          // Flag stalled orders so the core team can investigate.
+          // Credits were consumed on Polygon but Squid never reported a destination tx.
+          try {
+            const stalledMessage = getCrossChainCreditMessage(
+              info.totalCreditsUsed,
+              info.wethBridged,
+              info.creditCount,
+              info.polygonTxHash,
+              null,
+              orderHash,
+              status,
+              info.timestamp,
+              info.beneficiary,
+              { isStalled: true, executorAddress: info.executorAddress }
+            );
+            await slackComponent.updateMessage(
+              info.slackChannel,
+              info.slackTs,
+              stalledMessage
+            );
+          } catch (error) {
+            console.error(
+              `[POLLING] ❌ Failed to send stalled-order alert:`,
+              error
+            );
+          }
+
           pendingOrders.delete(orderHash);
         }
       }
@@ -187,7 +221,7 @@ setInterval(() => {
 }, POLLING_INTERVAL_MS);
 
 const processor = new EvmBatchProcessor()
-  .setGateway(GATEWAY)
+  .setGateway({ url: GATEWAY, apiKey: SQUID_API_KEY })
   .setRpcEndpoint({
     url: assertNotNull(RPC_ENDPOINT),
     rateLimit: 10,
@@ -401,6 +435,9 @@ initSlack()
                   orderHash: orderHashStr,
                   creditIds: [],
                   totalCreditsUsed: BigInt(0),
+                  // CreditUsed._sender is the actual user spending credits;
+                  // the Spoke's `order.fromAddress` is the Credits Executor contract.
+                  beneficiary: _sender.toLowerCase(),
                   fromAddress: order.fromAddress.toLowerCase(),
                   toAddress: order.toAddress.toLowerCase(),
                   filler: order.filler.toLowerCase(),
@@ -535,7 +572,9 @@ initSlack()
                   squidOrder.destinationTxHash,
                   orderHashStr,
                   squidOrder.squidStatus,
-                  squidOrder.timestamp
+                  squidOrder.timestamp,
+                  squidOrder.beneficiary ?? squidOrder.fromAddress,
+                  { executorAddress: squidOrder.fromAddress }
                 )
               );
 
@@ -562,6 +601,8 @@ initSlack()
                   creditCount: squidOrder.creditIds.length,
                   timestamp: squidOrder.timestamp,
                   retryCount: 0,
+                  beneficiary: squidOrder.beneficiary ?? squidOrder.fromAddress,
+                  executorAddress: squidOrder.fromAddress,
                 });
                 console.log(
                   `[POLLING] 📥 Added order ${orderHashStr.slice(
