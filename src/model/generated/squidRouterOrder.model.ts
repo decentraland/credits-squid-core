@@ -23,6 +23,10 @@ export class SquidRouterOrder {
     totalCreditsUsed!: bigint
 
     @Index_()
+    @StringColumn_({nullable: true})
+    beneficiary!: string | undefined | null
+
+    @Index_()
     @StringColumn_({nullable: false})
     fromAddress!: string
 

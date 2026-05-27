@@ -36,6 +36,8 @@ interface PendingOrderInfo {
   creditCount: number;
   timestamp: Date;
   retryCount: number;
+  beneficiary: string;
+  executorAddress: string;
 }
 
 const pendingOrders = new Map<string, PendingOrderInfo>();
@@ -44,6 +46,10 @@ const MAX_RETRIES = 30; // ~15 minutes max polling
 
 const schemaName = process.env.DB_SCHEMA;
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
+const SQUID_API_KEY = assertNotNull(
+  process.env.SQUID_API_KEY,
+  "SQUID_API_KEY env var is required — the Subsquid gateway returns 403 without it (see https://docs.sqd.dev/v2-keys)"
+);
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
@@ -104,6 +110,43 @@ async function initSlack() {
 }
 
 /**
+ * Update the Slack message for an order whose polling has run out without a destination tx,
+ * tagging the core team so the stalled / unreachable order is investigated.
+ * Credits were consumed on Polygon but Squid never reported a destination tx.
+ */
+async function flagStalledOrder(
+  orderHash: string,
+  info: PendingOrderInfo,
+  lastStatus: string | null | undefined
+) {
+  if (!slackComponent) return;
+  try {
+    const stalledMessage = getCrossChainCreditMessage(
+      info.totalCreditsUsed,
+      info.wethBridged,
+      info.creditCount,
+      info.polygonTxHash,
+      null,
+      orderHash,
+      lastStatus,
+      info.timestamp,
+      info.beneficiary,
+      { isStalled: true, executorAddress: info.executorAddress }
+    );
+    await slackComponent.updateMessage(
+      info.slackChannel,
+      info.slackTs,
+      stalledMessage
+    );
+  } catch (error) {
+    console.error(
+      `[POLLING] ❌ Failed to send stalled-order alert:`,
+      error
+    );
+  }
+}
+
+/**
  * Background polling for pending cross-chain orders
  * Polls Squid API and updates Slack messages when Ethereum tx is available
  */
@@ -111,10 +154,12 @@ async function pollPendingOrders() {
   if (!slackComponent || pendingOrders.size === 0) return;
 
   for (const [orderHash, info] of pendingOrders.entries()) {
+    let lastStatus: string | null | undefined;
     try {
       const { destinationTxHash, status } = await fetchSquidStatus(
         info.polygonTxHash
       );
+      lastStatus = status;
 
       // Check if we got a final status
       const isFinal =
@@ -133,7 +178,9 @@ async function pollPendingOrders() {
           destinationTxHash,
           orderHash,
           status,
-          info.timestamp
+          info.timestamp,
+          info.beneficiary,
+          { executorAddress: info.executorAddress }
         );
 
         await slackComponent.updateMessage(
@@ -161,8 +208,9 @@ async function pollPendingOrders() {
             `[POLLING] ⚠️ Max retries reached for order ${orderHash.slice(
               0,
               18
-            )}..., removing from queue`
+            )}..., flagging as stalled`
           );
+          await flagStalledOrder(orderHash, info, lastStatus);
           pendingOrders.delete(orderHash);
         }
       }
@@ -173,6 +221,13 @@ async function pollPendingOrders() {
       );
       info.retryCount++;
       if (info.retryCount >= MAX_RETRIES) {
+        console.log(
+          `[POLLING] ⚠️ Max retries reached after persistent errors for order ${orderHash.slice(
+            0,
+            18
+          )}..., flagging as stalled`
+        );
+        await flagStalledOrder(orderHash, info, lastStatus);
         pendingOrders.delete(orderHash);
       }
     }
@@ -187,7 +242,7 @@ setInterval(() => {
 }, POLLING_INTERVAL_MS);
 
 const processor = new EvmBatchProcessor()
-  .setGateway(GATEWAY)
+  .setGateway({ url: GATEWAY, apiKey: SQUID_API_KEY })
   .setRpcEndpoint({
     url: assertNotNull(RPC_ENDPOINT),
     rateLimit: 10,
@@ -401,6 +456,9 @@ initSlack()
                   orderHash: orderHashStr,
                   creditIds: [],
                   totalCreditsUsed: BigInt(0),
+                  // CreditUsed._sender is the actual user spending credits;
+                  // the Spoke's `order.fromAddress` is the Credits Executor contract.
+                  beneficiary: _sender.toLowerCase(),
                   fromAddress: order.fromAddress.toLowerCase(),
                   toAddress: order.toAddress.toLowerCase(),
                   filler: order.filler.toLowerCase(),
@@ -535,7 +593,9 @@ initSlack()
                   squidOrder.destinationTxHash,
                   orderHashStr,
                   squidOrder.squidStatus,
-                  squidOrder.timestamp
+                  squidOrder.timestamp,
+                  squidOrder.beneficiary ?? squidOrder.fromAddress,
+                  { executorAddress: squidOrder.fromAddress }
                 )
               );
 
@@ -562,6 +622,8 @@ initSlack()
                   creditCount: squidOrder.creditIds.length,
                   timestamp: squidOrder.timestamp,
                   retryCount: 0,
+                  beneficiary: squidOrder.beneficiary ?? squidOrder.fromAddress,
+                  executorAddress: squidOrder.fromAddress,
                 });
                 console.log(
                   `[POLLING] 📥 Added order ${orderHashStr.slice(
