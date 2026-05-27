@@ -3,6 +3,7 @@ import { Store } from "@subsquid/typeorm-store";
 import { ethers } from "ethers";
 import { EntityManager } from "typeorm";
 import { getCoralScanUrl } from "./coral";
+import { getAcrossScanUrl } from "./across";
 
 export interface SlackMessageResponse {
   ok: boolean;
@@ -162,6 +163,72 @@ export function getCrossChainCreditMessage(
     etherscanUrl ? `<${etherscanUrl}|View on Etherscan>` : "_Pending..._"
   }
 *Coral Scan:* <${coralScanUrl}|View on CoralScan>
+
+*Time:* \`${timestamp.toISOString()}\``;
+}
+
+// Across deposit statuses that represent a terminal failure (credits consumed on
+// Polygon but funds not delivered on the destination chain).
+const ERROR_ACROSS_STATUSES = new Set(["refunded", "expired"]);
+
+function isAcrossErrorStatus(status: string | null | undefined): boolean {
+  return !!status && ERROR_ACROSS_STATUSES.has(status.toLowerCase());
+}
+
+/**
+ * Slack message for an Across cross-chain credit usage. Parallel to
+ * getCrossChainCreditMessage but with Across-appropriate labels and links.
+ */
+export function getAcrossCreditMessage(
+  totalCreditsUsed: bigint,
+  manaBridged: bigint,
+  creditCount: number,
+  polygonTxHash: string,
+  ethereumTxHash: string | null | undefined,
+  depositId: string,
+  acrossStatus: string | null | undefined,
+  timestamp: Date,
+  beneficiary: string,
+  options: { isStalled?: boolean; executorAddress?: string } = {}
+) {
+  const polygonscanUrl = `https://polygonscan.com/tx/${polygonTxHash}`;
+  const etherscanUrl = ethereumTxHash
+    ? `https://etherscan.io/tx/${ethereumTxHash}`
+    : null;
+  const acrossScanUrl = getAcrossScanUrl(polygonTxHash);
+
+  const isError = options.isStalled || isAcrossErrorStatus(acrossStatus);
+
+  const header = isError
+    ? `🚨 *Cross-Chain Credit FAILED (Across)* — ${coreTeamMention()}`
+    : `🌉 *Cross-Chain Credit Usage Detected (Across)*`;
+
+  const stalledNote = options.isStalled
+    ? `\n*⚠️ Polling timed out before destination fill was observed.*`
+    : "";
+
+  const executorLine =
+    options.executorAddress &&
+    options.executorAddress.toLowerCase() !== beneficiary.toLowerCase()
+      ? `\n*Executor:* \`${options.executorAddress}\``
+      : "";
+
+  return `${header}${stalledNote}
+
+*User:* \`${beneficiary}\`${executorLine}
+*Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
+    totalCreditsUsed
+  )}\` MANA)
+*MANA Bridged:* \`${ethers.formatEther(manaBridged)}\` MANA
+
+*Deposit ID:* \`${depositId.slice(0, 18)}...\`
+*Across Status:* \`${acrossStatus || "unknown"}\`
+
+*Polygon Tx:* <${polygonscanUrl}|View on Polygonscan>
+*Ethereum Tx:* ${
+    etherscanUrl ? `<${etherscanUrl}|View on Etherscan>` : "_Pending..._"
+  }
+*Across Explorer:* <${acrossScanUrl}|View on Across>
 
 *Time:* \`${timestamp.toISOString()}\``;
 }
