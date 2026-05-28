@@ -175,13 +175,34 @@ function isAcrossErrorStatus(status: string | null | undefined): boolean {
   return !!status && ERROR_ACROSS_STATUSES.has(status.toLowerCase());
 }
 
+// Decimals for known bridge tokens used by Across in the DCL credits flow.
+// FundsDeposited reports the bridge-token amount (e.g. USDC at 6 decimals), NOT
+// MANA — formatting with 18 decimals would mis-display the value by ~10^12.
+const BRIDGE_TOKEN_DECIMALS: Record<string, { decimals: number; symbol: string }> = {
+  // USDC Polygon (native)
+  "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": { decimals: 6, symbol: "USDC" },
+  // USDC Ethereum
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": { decimals: 6, symbol: "USDC" },
+};
+
+function formatBridgeAmount(amount: bigint, token: string | null | undefined): string {
+  const info = token ? BRIDGE_TOKEN_DECIMALS[token.toLowerCase()] : undefined;
+  if (info) {
+    return `${ethers.formatUnits(amount, info.decimals)} ${info.symbol}`;
+  }
+  // Unknown token — surface the raw amount and address so ops can interpret manually
+  // instead of silently mis-formatting at 18 decimals.
+  return `${amount.toString()} (raw, token: ${token || "unknown"})`;
+}
+
 /**
  * Slack message for an Across cross-chain credit usage. Parallel to
  * getCrossChainCreditMessage but with Across-appropriate labels and links.
  */
 export function getAcrossCreditMessage(
   totalCreditsUsed: bigint,
-  manaBridged: bigint,
+  bridgeInputAmount: bigint,
+  bridgeInputToken: string | null | undefined,
   creditCount: number,
   polygonTxHash: string,
   ethereumTxHash: string | null | undefined,
@@ -219,7 +240,7 @@ export function getAcrossCreditMessage(
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
     totalCreditsUsed
   )}\` MANA)
-*MANA Bridged:* \`${ethers.formatEther(manaBridged)}\` MANA
+*Bridge Input:* \`${formatBridgeAmount(bridgeInputAmount, bridgeInputToken)}\`
 
 *Deposit ID:* \`${depositId.slice(0, 18)}...\`
 *Across Status:* \`${acrossStatus || "unknown"}\`

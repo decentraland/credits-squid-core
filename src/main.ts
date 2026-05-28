@@ -38,7 +38,10 @@ interface PendingOrderInfo {
   slackTs: string;
   slackChannel: string;
   totalCreditsUsed: bigint;
-  wethBridged: bigint;
+  // For Squid this is WETH; for Across this is the bridge token (typically USDC, 6 decimals).
+  // bridgeInputToken disambiguates so Slack can format with the right decimals.
+  bridgeInputAmount: bigint;
+  bridgeInputToken: string | null;
   creditCount: number;
   timestamp: Date;
   retryCount: number;
@@ -147,7 +150,8 @@ function buildCrossChainMessage(
   return info.provider === "across"
     ? getAcrossCreditMessage(
         info.totalCreditsUsed,
-        info.wethBridged,
+        info.bridgeInputAmount,
+        info.bridgeInputToken,
         info.creditCount,
         info.polygonTxHash,
         destinationTxHash,
@@ -159,7 +163,7 @@ function buildCrossChainMessage(
       )
     : getCrossChainCreditMessage(
         info.totalCreditsUsed,
-        info.wethBridged,
+        info.bridgeInputAmount,
         info.creditCount,
         info.polygonTxHash,
         destinationTxHash,
@@ -778,7 +782,8 @@ initSlack()
                   slackTs: slackResult.ts,
                   slackChannel: slackResult.channel,
                   totalCreditsUsed: squidOrder.totalCreditsUsed,
-                  wethBridged: squidOrder.fromAmount ?? BigInt(0),
+                  bridgeInputAmount: squidOrder.fromAmount ?? BigInt(0),
+                  bridgeInputToken: squidOrder.fromToken ?? null,
                   creditCount: squidOrder.creditIds.length,
                   timestamp: squidOrder.timestamp,
                   retryCount: 0,
@@ -836,6 +841,7 @@ initSlack()
                 getAcrossCreditMessage(
                   acrossOrder.totalCreditsUsed,
                   acrossOrder.inputAmount ?? BigInt(0),
+                  acrossOrder.inputToken,
                   acrossOrder.creditIds.length,
                   acrossOrder.txHash,
                   acrossOrder.destinationTxHash,
@@ -853,11 +859,15 @@ initSlack()
                 } credits, ${formatMana(acrossOrder.totalCreditsUsed)}`
               );
 
-              // If not yet filled, add to the polling queue for async resolution.
-              const isFilled =
-                acrossOrder.acrossStatus === AcrossDepositStatus.FILLED &&
-                !!acrossOrder.destinationTxHash;
-              if (slackResult.ts && slackResult.channel && !isFilled) {
+              // Only queue for polling if the deposit is not yet in a TERMINAL state.
+              // Filled/refunded/expired are all final — no need to poll further. Previously
+              // we only checked filled+destTx, so refunded/expired initial responses would
+              // queue one wasted poll cycle before resolving.
+              const isTerminal =
+                acrossOrder.acrossStatus === AcrossDepositStatus.FILLED ||
+                acrossOrder.acrossStatus === AcrossDepositStatus.REFUNDED ||
+                acrossOrder.acrossStatus === AcrossDepositStatus.EXPIRED;
+              if (slackResult.ts && slackResult.channel && !isTerminal) {
                 pendingOrders.set(depositId, {
                   provider: "across",
                   orderHash: depositId,
@@ -865,7 +875,8 @@ initSlack()
                   slackTs: slackResult.ts,
                   slackChannel: slackResult.channel,
                   totalCreditsUsed: acrossOrder.totalCreditsUsed,
-                  wethBridged: acrossOrder.inputAmount ?? BigInt(0),
+                  bridgeInputAmount: acrossOrder.inputAmount ?? BigInt(0),
+                  bridgeInputToken: acrossOrder.inputToken ?? null,
                   creditCount: acrossOrder.creditIds.length,
                   timestamp: acrossOrder.timestamp,
                   retryCount: 0,

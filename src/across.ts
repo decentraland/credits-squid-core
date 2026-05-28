@@ -7,19 +7,36 @@
  * the txHash form here since the indexer already has the source tx hash from the log.
  */
 
-const ACROSS_API_URL = process.env.ACROSS_API_URL || "https://app.across.to/api";
+import { POLYGON_CHAIN_ID } from "./constants";
 
-export const POLYGON_CHAIN_ID = "137";
+const ACROSS_API_URL = process.env.ACROSS_API_URL || "https://app.across.to/api";
 
 // Across explorer base URL for a deposit's source transaction.
 export const ACROSS_SCAN_BASE_URL = "https://app.across.to/transactions";
 
 // Across deposit status values returned by /api/deposit/status.
+// Treat this as the closed set of statuses we recognize as final or known. Unknown
+// statuses from the API (e.g. a future "slow_fill") are NOT cast into this enum —
+// see parseAcrossStatus below.
 export enum AcrossDepositStatus {
   PENDING = "pending",
   FILLED = "filled",
   REFUNDED = "refunded",
   EXPIRED = "expired",
+}
+
+const KNOWN_ACROSS_STATUSES = new Set<string>(
+  Object.values(AcrossDepositStatus) as string[]
+);
+
+/**
+ * Parse a raw API status string into a known AcrossDepositStatus, returning the
+ * raw string when unknown. The poller treats `string`-not-in-enum as non-final
+ * (keeps polling), which is the safe behavior for a future status we haven't seen.
+ */
+function parseAcrossStatus(raw: string | undefined): AcrossDepositStatus | string {
+  const s = (raw || "pending").toLowerCase();
+  return KNOWN_ACROSS_STATUSES.has(s) ? (s as AcrossDepositStatus) : s;
 }
 
 interface AcrossStatusResponse {
@@ -40,7 +57,8 @@ export async function fetchAcrossStatus(
   originChainId: string = POLYGON_CHAIN_ID
 ): Promise<{
   destinationTxHash: string | null;
-  status: AcrossDepositStatus | null;
+  // Either a known AcrossDepositStatus, the raw string (unknown future status), or null on error.
+  status: AcrossDepositStatus | string | null;
 }> {
   try {
     const queryParams = new URLSearchParams({
@@ -67,7 +85,7 @@ export async function fetchAcrossStatus(
     }
 
     const data: AcrossStatusResponse = await response.json();
-    const status = (data.status || "pending").toLowerCase() as AcrossDepositStatus;
+    const status = parseAcrossStatus(data.status);
 
     console.log(
       `[ACROSS] Status: ${status}, fillTx: ${data.fillTxHash || "pending"}`
