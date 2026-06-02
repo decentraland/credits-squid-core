@@ -444,6 +444,25 @@ initSlack()
           }
         }
 
+        // Across's SpokePool is shared by every Across user on Polygon, so the vast majority
+        // of FundsDeposited events in a block are unrelated to us. A deposit is ours only when
+        // it shares a tx with a CreditUsed event from a watched CreditsManager (the credit
+        // payment and the bridge deposit happen atomically in the same tx). Precompute that set
+        // of tx hashes so we can ignore — and not log — everyone else's deposits. Keying off the
+        // CreditsManager (not the executor address) keeps this correct across executor redeploys.
+        const creditTxHashes = new Set<string>();
+        for (let log of block.logs) {
+          if (
+            CREDITS_CONTRACT_ADDRESSES.includes(log.address.toLowerCase()) &&
+            log.topics[0] === CreditsEvents.CreditUsed.topic
+          ) {
+            creditTxHashes.add(
+              log.transactionHash ||
+                `unknown-${block.header.height}-${log.logIndex}`
+            );
+          }
+        }
+
         // First pass: Find all OrderCreated events and index by txHash
         for (let log of block.logs) {
           if (
@@ -466,29 +485,34 @@ initSlack()
             );
           }
 
-          // Across FundsDeposited events (only if the listener is wired for this network)
+          // Across FundsDeposited events (only if the listener is wired for this network).
+          // Ignore deposits that don't belong to a DCL credits operation — see creditTxHashes
+          // above — so the shared SpokePool's unrelated traffic doesn't flood the logs/state.
           if (
             ACROSS_SPOKE_POOL_ADDRESS &&
             log.address.toLowerCase() === ACROSS_SPOKE_POOL_ADDRESS &&
             log.topics[0] === AcrossEvents.FundsDeposited.topic
           ) {
-            const deposit = AcrossEvents.FundsDeposited.decode(log);
-            const depositId = deposit.depositId.toString();
             const txHash =
               log.transactionHash ||
               `unknown-${block.header.height}-${log.logIndex}`;
 
-            acrossDepositByTx.set(txHash, { depositId, deposit, log });
+            if (creditTxHashes.has(txHash)) {
+              const deposit = AcrossEvents.FundsDeposited.decode(log);
+              const depositId = deposit.depositId.toString();
 
-            console.log(
-              `[ACROSS] 🔗 FundsDeposited: depositId=${depositId.slice(
-                0,
-                18
-              )}..., depositor=${bytes32ToAddress(deposit.depositor).slice(
-                0,
-                10
-              )}..., dstChain=${deposit.destinationChainId.toString()}`
-            );
+              acrossDepositByTx.set(txHash, { depositId, deposit, log });
+
+              console.log(
+                `[ACROSS] 🔗 FundsDeposited: depositId=${depositId.slice(
+                  0,
+                  18
+                )}..., depositor=${bytes32ToAddress(deposit.depositor).slice(
+                  0,
+                  10
+                )}..., dstChain=${deposit.destinationChainId.toString()}`
+              );
+            }
           }
         }
 
