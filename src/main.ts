@@ -141,7 +141,7 @@ function buildCrossChainMessage(
   info: PendingOrderInfo,
   destinationTxHash: string | null,
   status: string | null | undefined,
-  opts: { isStalled?: boolean } = {}
+  opts: { isStalled?: boolean; actionsSucceeded?: boolean } = {}
 ) {
   const messageOptions = {
     ...opts,
@@ -215,16 +215,18 @@ async function fetchPendingOrderStatus(info: PendingOrderInfo): Promise<{
   destinationTxHash: string | null;
   status: string | null;
   isFinal: boolean;
+  // Across only: whether the destination register ran. Defaults to true for Squid
+  // (which has no equivalent signal) and before a fill is observed.
+  actionsSucceeded: boolean;
 }> {
   if (info.provider === "across") {
-    const { destinationTxHash, status } = await fetchAcrossStatus(
-      info.polygonTxHash
-    );
+    const { destinationTxHash, status, actionsSucceeded } =
+      await fetchAcrossStatus(info.polygonTxHash);
     const isFinal =
       status === AcrossDepositStatus.FILLED ||
       status === AcrossDepositStatus.REFUNDED ||
       status === AcrossDepositStatus.EXPIRED;
-    return { destinationTxHash, status, isFinal };
+    return { destinationTxHash, status, isFinal, actionsSucceeded };
   }
 
   const { destinationTxHash, status } = await fetchSquidStatus(
@@ -235,7 +237,7 @@ async function fetchPendingOrderStatus(info: PendingOrderInfo): Promise<{
     status === SquidTransactionStatus.PARTIAL_SUCCESS ||
     status === SquidTransactionStatus.REFUND_STATUS ||
     status === SquidTransactionStatus.NEEDS_GAS;
-  return { destinationTxHash, status, isFinal };
+  return { destinationTxHash, status, isFinal, actionsSucceeded: true };
 }
 
 /**
@@ -248,7 +250,7 @@ async function pollPendingOrders() {
   for (const [orderRef, info] of pendingOrders.entries()) {
     let lastStatus: string | null | undefined;
     try {
-      const { destinationTxHash, status, isFinal } =
+      const { destinationTxHash, status, isFinal, actionsSucceeded } =
         await fetchPendingOrderStatus(info);
       lastStatus = status;
 
@@ -257,7 +259,8 @@ async function pollPendingOrders() {
           orderRef,
           info,
           destinationTxHash,
-          status
+          status,
+          { actionsSucceeded }
         );
 
         await slackComponent.updateMessage(
@@ -813,16 +816,18 @@ initSlack()
         const acrossOrder = acrossOrders.get(depositId);
         if (!acrossOrder) continue;
 
+        // Whether the destination actions (the register) succeeded. false ⇒ filled but
+        // the register reverted; the bridged MANA went to the recovery wallet.
+        let actionsSucceeded = true;
         try {
-          const { destinationTxHash, status } = await fetchAcrossStatus(
-            acrossOrder.txHash
-          );
-          acrossOrder.destinationTxHash = destinationTxHash;
-          acrossOrder.acrossStatus = status;
+          const result = await fetchAcrossStatus(acrossOrder.txHash);
+          acrossOrder.destinationTxHash = result.destinationTxHash;
+          acrossOrder.acrossStatus = result.status;
+          actionsSucceeded = result.actionsSucceeded;
 
-          if (destinationTxHash) {
+          if (result.destinationTxHash) {
             console.log(
-              `[ACROSS] ✅ Got destination fill tx: ${destinationTxHash.slice(
+              `[ACROSS] ✅ Got destination fill tx: ${result.destinationTxHash.slice(
                 0,
                 18
               )}...`
@@ -849,7 +854,7 @@ initSlack()
                   acrossOrder.acrossStatus,
                   acrossOrder.timestamp,
                   acrossOrder.beneficiary ?? acrossOrder.depositor,
-                  { executorAddress: acrossOrder.depositor }
+                  { executorAddress: acrossOrder.depositor, actionsSucceeded }
                 )
               );
 

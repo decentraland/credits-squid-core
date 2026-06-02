@@ -3,7 +3,6 @@ import { Store } from "@subsquid/typeorm-store";
 import { ethers } from "ethers";
 import { EntityManager } from "typeorm";
 import { getCoralScanUrl } from "./coral";
-import { getAcrossScanUrl } from "./across";
 
 export interface SlackMessageResponse {
   ok: boolean;
@@ -210,15 +209,28 @@ export function getAcrossCreditMessage(
   acrossStatus: string | null | undefined,
   timestamp: Date,
   beneficiary: string,
-  options: { isStalled?: boolean; executorAddress?: string } = {}
+  options: {
+    isStalled?: boolean;
+    executorAddress?: string;
+    actionsSucceeded?: boolean;
+  } = {}
 ) {
   const polygonscanUrl = `https://polygonscan.com/tx/${polygonTxHash}`;
   const etherscanUrl = ethereumTxHash
     ? `https://etherscan.io/tx/${ethereumTxHash}`
     : null;
-  const acrossScanUrl = getAcrossScanUrl(polygonTxHash);
 
-  const isError = options.isStalled || isAcrossErrorStatus(acrossStatus);
+  // A deposit can be `filled` (MANA delivered to the destination) yet have its embedded
+  // actions revert — i.e. the register failed and the bridged MANA went to the recovery
+  // wallet instead of minting the NAME. Treat that as a failure even though Across reports
+  // `filled`. Only flag it once the deposit has actually filled — actionsSucceeded defaults
+  // to false before the fill is observed, so guarding on `filled` avoids false alarms on a
+  // still-pending deposit.
+  const isFilled = !!acrossStatus && acrossStatus.toLowerCase() === "filled";
+  const actionsFailed = isFilled && options.actionsSucceeded === false;
+
+  const isError =
+    options.isStalled || isAcrossErrorStatus(acrossStatus) || actionsFailed;
 
   const header = isError
     ? `🚨 *Cross-Chain Credit FAILED (Across)* — ${coreTeamMention()}`
@@ -228,13 +240,17 @@ export function getAcrossCreditMessage(
     ? `\n*⚠️ Polling timed out before destination fill was observed.*`
     : "";
 
+  const actionsNote = actionsFailed
+    ? `\n*⚠️ Deposit filled but the register reverted — bridged MANA went to the recovery wallet, the NAME was NOT minted.*`
+    : "";
+
   const executorLine =
     options.executorAddress &&
     options.executorAddress.toLowerCase() !== beneficiary.toLowerCase()
       ? `\n*Executor:* \`${options.executorAddress}\``
       : "";
 
-  return `${header}${stalledNote}
+  return `${header}${stalledNote}${actionsNote}
 
 *User:* \`${beneficiary}\`${executorLine}
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
@@ -243,13 +259,14 @@ export function getAcrossCreditMessage(
 *Bridge Input:* \`${formatBridgeAmount(bridgeInputAmount, bridgeInputToken)}\`
 
 *Deposit ID:* \`${depositId.slice(0, 18)}...\`
-*Across Status:* \`${acrossStatus || "unknown"}\`
+*Across Status:* \`${acrossStatus || "unknown"}\`${
+    isFilled ? ` (register ${actionsFailed ? "FAILED" : "ok"})` : ""
+  }
 
 *Polygon Tx:* <${polygonscanUrl}|View on Polygonscan>
 *Ethereum Tx:* ${
     etherscanUrl ? `<${etherscanUrl}|View on Etherscan>` : "_Pending..._"
   }
-*Across Explorer:* <${acrossScanUrl}|View on Across>
 
 *Time:* \`${timestamp.toISOString()}\``;
 }

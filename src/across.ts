@@ -11,8 +11,10 @@ import { POLYGON_CHAIN_ID } from "./constants";
 
 const ACROSS_API_URL = process.env.ACROSS_API_URL || "https://app.across.to/api";
 
-// Across explorer base URL for a deposit's source transaction.
-export const ACROSS_SCAN_BASE_URL = "https://app.across.to/transactions";
+// NOTE: Across has no reliable public per-deposit explorer page (the app's
+// /transactions/<hash> route 404s — it's a wallet-gated SPA, and our depositor is the
+// executor contract, not a user wallet). So the Slack message links the origin tx on
+// Polygonscan instead; there is intentionally no Across-explorer link.
 
 // Across deposit status values returned by /api/deposit/status.
 // Treat this as the closed set of statuses we recognize as final or known. Unknown
@@ -41,16 +43,21 @@ function parseAcrossStatus(raw: string | undefined): AcrossDepositStatus | strin
 
 interface AcrossStatusResponse {
   status?: string;
-  fillTxHash?: string;
+  // The destination fill tx is returned as `fillTx` / `fillTxnRef` (NOT `fillTxHash`).
+  fillTx?: string;
+  fillTxnRef?: string;
   depositTxHash?: string;
-  refundTxHash?: string;
-  // Across also returns deposit metadata; we only consume the fields above.
+  // `actionsSucceeded` reports whether the embedded MulticallHandler actions
+  // (approve + register + sweep) ran — i.e. whether the NAME was actually minted.
+  // false ⇒ the deposit filled but the register reverted; bridged MANA went to recovery.
+  actionsSucceeded?: boolean;
+  depositRefundTxHash?: string | null;
 }
 
 /**
  * Fetch the status of an Across deposit by its Polygon (origin) transaction hash.
- * Returns the destination fill tx hash if the deposit has been filled, plus the
- * normalized status string.
+ * Returns the destination fill tx hash if the deposit has been filled, the normalized
+ * status, and whether the destination actions (the register) succeeded.
  */
 export async function fetchAcrossStatus(
   polygonTxHash: string,
@@ -59,6 +66,9 @@ export async function fetchAcrossStatus(
   destinationTxHash: string | null;
   // Either a known AcrossDepositStatus, the raw string (unknown future status), or null on error.
   status: AcrossDepositStatus | string | null;
+  // Whether the destination MulticallHandler actions (the register) succeeded. Defaults
+  // to true unless the API explicitly reports false.
+  actionsSucceeded: boolean;
 }> {
   try {
     const queryParams = new URLSearchParams({
@@ -81,33 +91,29 @@ export async function fetchAcrossStatus(
       console.error(
         `[ACROSS] ❌ Error fetching status: ${response.status} ${response.statusText}`
       );
-      return { destinationTxHash: null, status: null };
+      return { destinationTxHash: null, status: null, actionsSucceeded: false };
     }
 
     const data: AcrossStatusResponse = await response.json();
     const status = parseAcrossStatus(data.status);
+    const fillTx = data.fillTx || data.fillTxnRef || null;
+    const actionsSucceeded = data.actionsSucceeded !== false;
 
     console.log(
-      `[ACROSS] Status: ${status}, fillTx: ${data.fillTxHash || "pending"}`
+      `[ACROSS] Status: ${status}, fillTx: ${fillTx || "pending"}, actionsSucceeded: ${actionsSucceeded}`
     );
 
-    // A fill tx hash means delivered. Refunds/expiries are terminal failures with no fill.
+    // A fill tx means delivered. Refunds/expiries are terminal failures with no fill.
     return {
-      destinationTxHash: data.fillTxHash || null,
+      destinationTxHash: fillTx,
       status,
+      actionsSucceeded,
     };
   } catch (error) {
     console.error(
       `[ACROSS] ❌ Failed to fetch status for tx ${polygonTxHash}:`,
       error
     );
-    return { destinationTxHash: null, status: null };
+    return { destinationTxHash: null, status: null, actionsSucceeded: false };
   }
-}
-
-/**
- * Build the Across explorer URL for a source transaction.
- */
-export function getAcrossScanUrl(txHash: string): string {
-  return `${ACROSS_SCAN_BASE_URL}/${txHash}`;
 }
