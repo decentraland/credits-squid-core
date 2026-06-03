@@ -42,6 +42,8 @@ interface PendingOrderInfo {
   // bridgeInputToken disambiguates so Slack can format with the right decimals.
   bridgeInputAmount: bigint;
   bridgeInputToken: string | null;
+  // Across only: MANA the executor spent on the swap (NAME price + bridge/gas overhead).
+  manaSpent: bigint | null;
   creditCount: number;
   timestamp: Date;
   retryCount: number;
@@ -54,6 +56,27 @@ const pendingOrders = new Map<string, PendingOrderInfo>();
 // Normalize a bytes32-encoded address (left-padded) to a 20-byte hex address.
 function bytes32ToAddress(b32: string): string {
   return ("0x" + b32.slice(-40)).toLowerCase();
+}
+
+// Sum the MANA transferred OUT by `spender` within a single tx. For an Across credit deposit
+// the depositor (the executor) sends NAME_PRICE + the bridge/gas buffer into the swap, so this
+// is the real MANA cost of the operation — distinct from `inputAmount`, which is the bridged
+// leg (USDC) after the swap. Returns 0n if no such transfer is found.
+function sumManaSpentBy(
+  blockLogs: (Log & { transactionHash?: string })[],
+  txHash: string,
+  spender: string
+): bigint {
+  const spenderLc = spender.toLowerCase();
+  let total = 0n;
+  for (const log of blockLogs) {
+    if (log.address.toLowerCase() !== MANA_CONTRACT_ADDRESS) continue;
+    if (log.topics[0] !== ERC20Events.Transfer.topic) continue;
+    if ((log.transactionHash || "") !== txHash) continue;
+    const { from, value } = ERC20Events.Transfer.decode(log);
+    if (from.toLowerCase() === spenderLc) total += value;
+  }
+  return total;
 }
 const POLLING_INTERVAL_MS = 30000; // 30 seconds
 const MAX_RETRIES = 30; // ~15 minutes max polling
@@ -146,6 +169,7 @@ function buildCrossChainMessage(
   const messageOptions = {
     ...opts,
     executorAddress: info.executorAddress,
+    manaSpent: info.manaSpent,
   };
   return info.provider === "across"
     ? getAcrossCreditMessage(
@@ -658,6 +682,13 @@ initSlack()
                   inputToken: bytes32ToAddress(deposit.inputToken),
                   outputToken: bytes32ToAddress(deposit.outputToken),
                   inputAmount: deposit.inputAmount,
+                  // Real MANA cost: what the executor (depositor) put into the swap = NAME price
+                  // + bridge/gas overhead. Captured from the depositor's MANA-out in this tx.
+                  inputManaAmount: sumManaSpentBy(
+                    block.logs as (Log & { transactionHash?: string })[],
+                    txHash,
+                    bytes32ToAddress(deposit.depositor)
+                  ),
                   outputAmount: deposit.outputAmount,
                   destinationChainId: deposit.destinationChainId,
                   txHash,
@@ -811,6 +842,8 @@ initSlack()
                   totalCreditsUsed: squidOrder.totalCreditsUsed,
                   bridgeInputAmount: squidOrder.fromAmount ?? BigInt(0),
                   bridgeInputToken: squidOrder.fromToken ?? null,
+                  // Squid path doesn't track the MANA-spend breakdown (Across-only feature).
+                  manaSpent: null,
                   creditCount: squidOrder.creditIds.length,
                   timestamp: squidOrder.timestamp,
                   retryCount: 0,
@@ -878,7 +911,11 @@ initSlack()
                   acrossOrder.acrossStatus,
                   acrossOrder.timestamp,
                   acrossOrder.beneficiary ?? acrossOrder.depositor,
-                  { executorAddress: acrossOrder.depositor, actionsSucceeded }
+                  {
+                    executorAddress: acrossOrder.depositor,
+                    actionsSucceeded,
+                    manaSpent: acrossOrder.inputManaAmount,
+                  }
                 )
               );
 
@@ -906,6 +943,7 @@ initSlack()
                   totalCreditsUsed: acrossOrder.totalCreditsUsed,
                   bridgeInputAmount: acrossOrder.inputAmount ?? BigInt(0),
                   bridgeInputToken: acrossOrder.inputToken ?? null,
+                  manaSpent: acrossOrder.inputManaAmount ?? null,
                   creditCount: acrossOrder.creditIds.length,
                   timestamp: acrossOrder.timestamp,
                   retryCount: 0,

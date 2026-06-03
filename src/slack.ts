@@ -213,6 +213,8 @@ export function getAcrossCreditMessage(
     isStalled?: boolean;
     executorAddress?: string;
     actionsSucceeded?: boolean;
+    // MANA the executor actually spent on the swap (NAME price + bridge/gas overhead).
+    manaSpent?: bigint | null;
   } = {}
 ) {
   const polygonscanUrl = `https://polygonscan.com/tx/${polygonTxHash}`;
@@ -250,13 +252,27 @@ export function getAcrossCreditMessage(
       ? `\n*Executor:* \`${options.executorAddress}\``
       : "";
 
+  // Real MANA cost of the claim: what the executor put into the swap, broken down into the
+  // NAME price (covered by credits) and the bridge/gas overhead (the executor's own MANA).
+  // `bridgeInputAmount` below is the intermediate USDC actually bridged, not the cost.
+  const manaSpentLine =
+    options.manaSpent && options.manaSpent > 0n
+      ? `\n*MANA Spent:* \`${ethers.formatEther(
+          options.manaSpent
+        )}\` MANA (NAME \`${ethers.formatEther(
+          totalCreditsUsed
+        )}\` + bridge/gas \`${ethers.formatEther(
+          options.manaSpent - totalCreditsUsed
+        )}\`)`
+      : "";
+
   return `${header}${stalledNote}${actionsNote}
 
 *User:* \`${beneficiary}\`${executorLine}
 *Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
     totalCreditsUsed
-  )}\` MANA)
-*Bridge Input:* \`${formatBridgeAmount(bridgeInputAmount, bridgeInputToken)}\`
+  )}\` MANA)${manaSpentLine}
+*Bridged:* \`${formatBridgeAmount(bridgeInputAmount, bridgeInputToken)}\`
 
 *Deposit ID:* \`${depositId.slice(0, 18)}...\`
 *Across Status:* \`${acrossStatus || "unknown"}\`${

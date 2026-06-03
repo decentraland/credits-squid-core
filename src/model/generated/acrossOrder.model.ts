@@ -46,6 +46,9 @@ export class AcrossOrder {
     inputAmount!: bigint | undefined | null
 
     @BigIntColumn_({nullable: true})
+    inputManaAmount!: bigint | undefined | null
+
+    @BigIntColumn_({nullable: true})
     outputAmount!: bigint | undefined | null
 
     @BigIntColumn_({nullable: true})
