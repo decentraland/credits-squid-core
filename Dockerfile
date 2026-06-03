@@ -45,8 +45,11 @@ RUN echo -e "loglevel=silent\\nupdate-notifier=false" > /squid/.npmrc
 RUN npm i -g @subsquid/cli@latest && mv $(which sqd) /usr/local/bin/sqd
 
 # Install jq and AWS CLI v1
+# --break-system-packages: node:24-alpine ships Python 3.12, which marks the system
+# environment as externally managed (PEP 668) and refuses a plain `pip3 install`. This
+# is a throwaway container layer, so installing into the system site-packages is fine.
 RUN apk update && apk add --no-cache tini postgresql-client curl jq python3 py3-pip \
-    && pip3 install awscli \
+    && pip3 install awscli --break-system-packages \
     && rm -rf /var/cache/apk/*
 
 ENV PROMETHEUS_PORT 3001
