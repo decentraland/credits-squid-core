@@ -1,5 +1,6 @@
 export * from "./creditConsumption.model"
 export * from "./squidRouterOrder.model"
+export * from "./acrossOrder.model"
 export * from "./manaTransaction.model"
 export * from "./userCreditStats.model"
 export * from "./hourlyCreditUsage.model"

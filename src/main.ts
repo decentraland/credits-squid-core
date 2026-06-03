@@ -1,14 +1,16 @@
 import { assertNotNull, EvmBatchProcessor, Log } from "@subsquid/evm-processor";
 import { TypeormDatabase } from "@subsquid/typeorm-store";
-import { CreditConsumption, SquidRouterOrder } from "./model";
+import { CreditConsumption, SquidRouterOrder, AcrossOrder } from "./model";
 import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
 import { events as CreditsEvents } from "./abi/credits";
 import { events as ERC20Events } from "./abi/erc20";
 import { events as SpokeEvents } from "./abi/spoke";
+import { events as AcrossEvents } from "./abi/acrossSpokePool";
 import {
   createSlackComponent,
   getCreditUsedMessage,
   getCrossChainCreditMessage,
+  getAcrossCreditMessage,
   getLastNotified,
   ISlackComponent,
   setLastNotified,
@@ -24,15 +26,22 @@ import { findManaTransfersInBlock, createManaTransactions } from "./mana";
 import { formatMana } from "./utils";
 import { ManaTransfer } from "./types";
 import { fetchSquidStatus, SquidTransactionStatus } from "./coral";
+import { fetchAcrossStatus, AcrossDepositStatus } from "./across";
 
-// Pending orders that need polling for Ethereum tx hash
+// Pending orders that need polling for the destination tx hash.
+// `provider` discriminates which status API to poll (Squid vs Across).
 interface PendingOrderInfo {
+  provider: "squid" | "across";
+  // Squid order hash, or Across deposit ID — used only for logging / message keys.
   orderHash: string;
   polygonTxHash: string;
   slackTs: string;
   slackChannel: string;
   totalCreditsUsed: bigint;
-  wethBridged: bigint;
+  // For Squid this is WETH; for Across this is the bridge token (typically USDC, 6 decimals).
+  // bridgeInputToken disambiguates so Slack can format with the right decimals.
+  bridgeInputAmount: bigint;
+  bridgeInputToken: string | null;
   creditCount: number;
   timestamp: Date;
   retryCount: number;
@@ -41,6 +50,11 @@ interface PendingOrderInfo {
 }
 
 const pendingOrders = new Map<string, PendingOrderInfo>();
+
+// Normalize a bytes32-encoded address (left-padded) to a 20-byte hex address.
+function bytes32ToAddress(b32: string): string {
+  return ("0x" + b32.slice(-40)).toLowerCase();
+}
 const POLLING_INTERVAL_MS = 30000; // 30 seconds
 const MAX_RETRIES = 30; // ~15 minutes max polling
 
@@ -80,6 +94,15 @@ export const CREDITS_CONTRACT_ADDRESSES = isMainnet
 export const SPOKE_CONTRACT_ADDRESS =
   "0xfe91aaa1012b47499cfe8758874f2d2c52b22cd8";
 
+// Across SpokePool on Polygon mainnet. Verified on-chain: emits the unified
+// `FundsDeposited` event (topic 0x32ed1a40...). Across has no canonical Polygon
+// Amoy deployment, so testnet is left configurable via env (ACROSS_SPOKE_POOL_ADDRESS)
+// and the listener is only wired when an address is available.
+export const ACROSS_SPOKE_POOL_ADDRESS = (
+  process.env.ACROSS_SPOKE_POOL_ADDRESS ||
+  (isMainnet ? "0x9295ee1d8C5b022Be115A2AD3c30C72E34e7F096" : "")
+).toLowerCase();
+
 const GATEWAY = isMainnet
   ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
   : "https://v2.archive.subsquid.io/network/polygon-amoy-testnet";
@@ -110,28 +133,66 @@ async function initSlack() {
 }
 
 /**
+ * Build the Slack message for a pending order, picking the provider-appropriate
+ * formatter (Squid vs Across). `orderRef` is the Squid order hash or Across deposit ID.
+ */
+function buildCrossChainMessage(
+  orderRef: string,
+  info: PendingOrderInfo,
+  destinationTxHash: string | null,
+  status: string | null | undefined,
+  opts: { isStalled?: boolean; actionsSucceeded?: boolean } = {}
+) {
+  const messageOptions = {
+    ...opts,
+    executorAddress: info.executorAddress,
+  };
+  return info.provider === "across"
+    ? getAcrossCreditMessage(
+        info.totalCreditsUsed,
+        info.bridgeInputAmount,
+        info.bridgeInputToken,
+        info.creditCount,
+        info.polygonTxHash,
+        destinationTxHash,
+        orderRef,
+        status,
+        info.timestamp,
+        info.beneficiary,
+        messageOptions
+      )
+    : getCrossChainCreditMessage(
+        info.totalCreditsUsed,
+        info.bridgeInputAmount,
+        info.creditCount,
+        info.polygonTxHash,
+        destinationTxHash,
+        orderRef,
+        status,
+        info.timestamp,
+        info.beneficiary,
+        messageOptions
+      );
+}
+
+/**
  * Update the Slack message for an order whose polling has run out without a destination tx,
  * tagging the core team so the stalled / unreachable order is investigated.
- * Credits were consumed on Polygon but Squid never reported a destination tx.
+ * Credits were consumed on Polygon but the bridge never reported a destination tx.
  */
 async function flagStalledOrder(
-  orderHash: string,
+  orderRef: string,
   info: PendingOrderInfo,
   lastStatus: string | null | undefined
 ) {
   if (!slackComponent) return;
   try {
-    const stalledMessage = getCrossChainCreditMessage(
-      info.totalCreditsUsed,
-      info.wethBridged,
-      info.creditCount,
-      info.polygonTxHash,
+    const stalledMessage = buildCrossChainMessage(
+      orderRef,
+      info,
       null,
-      orderHash,
       lastStatus,
-      info.timestamp,
-      info.beneficiary,
-      { isStalled: true, executorAddress: info.executorAddress }
+      { isStalled: true }
     );
     await slackComponent.updateMessage(
       info.slackChannel,
@@ -147,40 +208,59 @@ async function flagStalledOrder(
 }
 
 /**
- * Background polling for pending cross-chain orders
- * Polls Squid API and updates Slack messages when Ethereum tx is available
+ * Fetch the destination tx + status for a pending order from the right bridge API.
+ * Returns whether the status is terminal (so polling can stop even without a dest tx).
+ */
+async function fetchPendingOrderStatus(info: PendingOrderInfo): Promise<{
+  destinationTxHash: string | null;
+  status: string | null;
+  isFinal: boolean;
+  // Across only: whether the destination register ran. Defaults to true for Squid
+  // (which has no equivalent signal) and before a fill is observed.
+  actionsSucceeded: boolean;
+}> {
+  if (info.provider === "across") {
+    const { destinationTxHash, status, actionsSucceeded } =
+      await fetchAcrossStatus(info.polygonTxHash);
+    const isFinal =
+      status === AcrossDepositStatus.FILLED ||
+      status === AcrossDepositStatus.REFUNDED ||
+      status === AcrossDepositStatus.EXPIRED;
+    return { destinationTxHash, status, isFinal, actionsSucceeded };
+  }
+
+  const { destinationTxHash, status } = await fetchSquidStatus(
+    info.polygonTxHash
+  );
+  const isFinal =
+    status === SquidTransactionStatus.SUCCESS ||
+    status === SquidTransactionStatus.PARTIAL_SUCCESS ||
+    status === SquidTransactionStatus.REFUND_STATUS ||
+    status === SquidTransactionStatus.NEEDS_GAS;
+  return { destinationTxHash, status, isFinal, actionsSucceeded: true };
+}
+
+/**
+ * Background polling for pending cross-chain orders (Squid + Across).
+ * Polls the provider's status API and updates Slack messages when the destination tx is available.
  */
 async function pollPendingOrders() {
   if (!slackComponent || pendingOrders.size === 0) return;
 
-  for (const [orderHash, info] of pendingOrders.entries()) {
+  for (const [orderRef, info] of pendingOrders.entries()) {
     let lastStatus: string | null | undefined;
     try {
-      const { destinationTxHash, status } = await fetchSquidStatus(
-        info.polygonTxHash
-      );
+      const { destinationTxHash, status, isFinal, actionsSucceeded } =
+        await fetchPendingOrderStatus(info);
       lastStatus = status;
 
-      // Check if we got a final status
-      const isFinal =
-        status === SquidTransactionStatus.SUCCESS ||
-        status === SquidTransactionStatus.PARTIAL_SUCCESS ||
-        status === SquidTransactionStatus.REFUND_STATUS ||
-        status === SquidTransactionStatus.NEEDS_GAS;
-
       if (destinationTxHash || isFinal) {
-        // Update Slack message with final status
-        const updatedMessage = getCrossChainCreditMessage(
-          info.totalCreditsUsed,
-          info.wethBridged,
-          info.creditCount,
-          info.polygonTxHash,
+        const updatedMessage = buildCrossChainMessage(
+          orderRef,
+          info,
           destinationTxHash,
-          orderHash,
           status,
-          info.timestamp,
-          info.beneficiary,
-          { executorAddress: info.executorAddress }
+          { actionsSucceeded }
         );
 
         await slackComponent.updateMessage(
@@ -190,45 +270,45 @@ async function pollPendingOrders() {
         );
 
         console.log(
-          `[POLLING] ✅ Updated Slack for order ${orderHash.slice(
+          `[POLLING] ✅ Updated Slack for ${info.provider} order ${orderRef.slice(
             0,
             18
-          )}...: status=${status}, ethTx=${
+          )}...: status=${status}, destTx=${
             destinationTxHash?.slice(0, 18) || "none"
           }`
         );
 
-        pendingOrders.delete(orderHash);
+        pendingOrders.delete(orderRef);
       } else {
         // Increment retry count
         info.retryCount++;
 
         if (info.retryCount >= MAX_RETRIES) {
           console.log(
-            `[POLLING] ⚠️ Max retries reached for order ${orderHash.slice(
+            `[POLLING] ⚠️ Max retries reached for order ${orderRef.slice(
               0,
               18
             )}..., flagging as stalled`
           );
-          await flagStalledOrder(orderHash, info, lastStatus);
-          pendingOrders.delete(orderHash);
+          await flagStalledOrder(orderRef, info, lastStatus);
+          pendingOrders.delete(orderRef);
         }
       }
     } catch (error) {
       console.error(
-        `[POLLING] ❌ Error polling order ${orderHash.slice(0, 18)}...:`,
+        `[POLLING] ❌ Error polling order ${orderRef.slice(0, 18)}...:`,
         error
       );
       info.retryCount++;
       if (info.retryCount >= MAX_RETRIES) {
         console.log(
-          `[POLLING] ⚠️ Max retries reached after persistent errors for order ${orderHash.slice(
+          `[POLLING] ⚠️ Max retries reached after persistent errors for order ${orderRef.slice(
             0,
             18
           )}..., flagging as stalled`
         );
-        await flagStalledOrder(orderHash, info, lastStatus);
-        pendingOrders.delete(orderHash);
+        await flagStalledOrder(orderRef, info, lastStatus);
+        pendingOrders.delete(orderRef);
       }
     }
   }
@@ -268,6 +348,15 @@ const processor = new EvmBatchProcessor()
     topic0: [SpokeEvents.OrderCreated.topic],
   });
 
+// Across deposits emit FundsDeposited on the SpokePool. Only wire the listener when
+// we have an address for the current network (mainnet always; testnet only if set via env).
+if (ACROSS_SPOKE_POOL_ADDRESS) {
+  processor.addLog({
+    address: [ACROSS_SPOKE_POOL_ADDRESS],
+    topic0: [AcrossEvents.FundsDeposited.topic],
+  });
+}
+
 const db = new TypeormDatabase({
   isolationLevel: "READ COMMITTED",
   supportHotBlocks: true,
@@ -286,6 +375,7 @@ initSlack()
 
       const consumptions: CreditConsumption[] = [];
       const squidRouterOrders = new Map<string, SquidRouterOrder>();
+      const acrossOrders = new Map<string, AcrossOrder>();
       const userStats = new Map<string, UserCreditStats>();
       const hourlyUsage = new Map<string, HourlyCreditUsage>();
       const dailyUsage = new Map<string, DailyCreditUsage>();
@@ -300,8 +390,15 @@ initSlack()
         { orderHash: string; order: any; log: any }
       >();
 
+      // Store Across FundsDeposited events by txHash for correlation with credits
+      const acrossDepositByTx = new Map<
+        string,
+        { depositId: string; deposit: any; log: any }
+      >();
+
       // Track new orders to send Slack notifications at end of batch
       const newOrderHashes = new Set<string>();
+      const newAcrossDepositIds = new Set<string>();
 
       for (let block of ctx.blocks) {
         // Create a map of txHash -> logs for this block to efficiently find MANA transfers
@@ -347,6 +444,25 @@ initSlack()
           }
         }
 
+        // Across's SpokePool is shared by every Across user on Polygon, so the vast majority
+        // of FundsDeposited events in a block are unrelated to us. A deposit is ours only when
+        // it shares a tx with a CreditUsed event from a watched CreditsManager (the credit
+        // payment and the bridge deposit happen atomically in the same tx). Precompute that set
+        // of tx hashes so we can ignore — and not log — everyone else's deposits. Keying off the
+        // CreditsManager (not the executor address) keeps this correct across executor redeploys.
+        const creditTxHashes = new Set<string>();
+        for (let log of block.logs) {
+          if (
+            CREDITS_CONTRACT_ADDRESSES.includes(log.address.toLowerCase()) &&
+            log.topics[0] === CreditsEvents.CreditUsed.topic
+          ) {
+            creditTxHashes.add(
+              log.transactionHash ||
+                `unknown-${block.header.height}-${log.logIndex}`
+            );
+          }
+        }
+
         // First pass: Find all OrderCreated events and index by txHash
         for (let log of block.logs) {
           if (
@@ -367,6 +483,36 @@ initSlack()
                 18
               )}..., from=${order.fromAddress.slice(0, 10)}...`
             );
+          }
+
+          // Across FundsDeposited events (only if the listener is wired for this network).
+          // Ignore deposits that don't belong to a DCL credits operation — see creditTxHashes
+          // above — so the shared SpokePool's unrelated traffic doesn't flood the logs/state.
+          if (
+            ACROSS_SPOKE_POOL_ADDRESS &&
+            log.address.toLowerCase() === ACROSS_SPOKE_POOL_ADDRESS &&
+            log.topics[0] === AcrossEvents.FundsDeposited.topic
+          ) {
+            const txHash =
+              log.transactionHash ||
+              `unknown-${block.header.height}-${log.logIndex}`;
+
+            if (creditTxHashes.has(txHash)) {
+              const deposit = AcrossEvents.FundsDeposited.decode(log);
+              const depositId = deposit.depositId.toString();
+
+              acrossDepositByTx.set(txHash, { depositId, deposit, log });
+
+              console.log(
+                `[ACROSS] 🔗 FundsDeposited: depositId=${depositId.slice(
+                  0,
+                  18
+                )}..., depositor=${bytes32ToAddress(deposit.depositor).slice(
+                  0,
+                  10
+                )}..., dstChain=${deposit.destinationChainId.toString()}`
+              );
+            }
           }
         }
 
@@ -488,6 +634,50 @@ initSlack()
                 `[SPOKE] 🦑 SquidRouterOrder ${orderHashStr.slice(0, 18)}...: ${
                   squidOrder.creditIds.length
                 } credits, total=${formatMana(squidOrder.totalCreditsUsed)}`
+              );
+            }
+
+            // If there's an Across FundsDeposited event in the same tx, create or update AcrossOrder
+            const acrossData = acrossDepositByTx.get(txHash);
+            if (acrossData) {
+              const { depositId, deposit } = acrossData;
+
+              let acrossOrder = acrossOrders.get(depositId);
+
+              if (!acrossOrder) {
+                acrossOrder = new AcrossOrder({
+                  id: depositId,
+                  depositId,
+                  creditIds: [],
+                  totalCreditsUsed: BigInt(0),
+                  // CreditUsed._sender is the end user; the deposit's `depositor` is the
+                  // SpokePoolPeriphery / Credits Executor that made the on-chain deposit.
+                  beneficiary: _sender.toLowerCase(),
+                  depositor: bytes32ToAddress(deposit.depositor),
+                  recipient: bytes32ToAddress(deposit.recipient),
+                  inputToken: bytes32ToAddress(deposit.inputToken),
+                  outputToken: bytes32ToAddress(deposit.outputToken),
+                  inputAmount: deposit.inputAmount,
+                  outputAmount: deposit.outputAmount,
+                  destinationChainId: deposit.destinationChainId,
+                  txHash,
+                  destinationTxHash: null,
+                  acrossStatus: null,
+                  blockNumber: block.header.height,
+                  timestamp,
+                });
+                acrossOrders.set(depositId, acrossOrder);
+                newAcrossDepositIds.add(depositId);
+              }
+
+              acrossOrder.creditIds = [...acrossOrder.creditIds, salt];
+              acrossOrder.totalCreditsUsed =
+                acrossOrder.totalCreditsUsed + _value;
+
+              console.log(
+                `[ACROSS] 🌉 AcrossOrder ${depositId.slice(0, 18)}...: ${
+                  acrossOrder.creditIds.length
+                } credits, total=${formatMana(acrossOrder.totalCreditsUsed)}`
               );
             }
 
@@ -613,12 +803,14 @@ initSlack()
                   squidOrder.squidStatus === SquidTransactionStatus.ONGOING)
               ) {
                 pendingOrders.set(orderHashStr, {
+                  provider: "squid",
                   orderHash: orderHashStr,
                   polygonTxHash: squidOrder.txHash,
                   slackTs: slackResult.ts,
                   slackChannel: slackResult.channel,
                   totalCreditsUsed: squidOrder.totalCreditsUsed,
-                  wethBridged: squidOrder.fromAmount ?? BigInt(0),
+                  bridgeInputAmount: squidOrder.fromAmount ?? BigInt(0),
+                  bridgeInputToken: squidOrder.fromToken ?? null,
                   creditCount: squidOrder.creditIds.length,
                   timestamp: squidOrder.timestamp,
                   retryCount: 0,
@@ -642,6 +834,101 @@ initSlack()
         }
       }
 
+      // Process new Across orders: fetch deposit status and send Slack notifications.
+      // Mirrors the Squid loop above but uses the Across API and message format.
+      for (const depositId of newAcrossDepositIds) {
+        const acrossOrder = acrossOrders.get(depositId);
+        if (!acrossOrder) continue;
+
+        // Whether the destination actions (the register) succeeded. false ⇒ filled but
+        // the register reverted; the bridged MANA went to the recovery wallet.
+        let actionsSucceeded = true;
+        try {
+          const result = await fetchAcrossStatus(acrossOrder.txHash);
+          acrossOrder.destinationTxHash = result.destinationTxHash;
+          acrossOrder.acrossStatus = result.status;
+          actionsSucceeded = result.actionsSucceeded;
+
+          if (result.destinationTxHash) {
+            console.log(
+              `[ACROSS] ✅ Got destination fill tx: ${result.destinationTxHash.slice(
+                0,
+                18
+              )}...`
+            );
+          }
+        } catch (error) {
+          console.error(`[ACROSS] ❌ Failed to fetch status:`, error);
+        }
+
+        if (slackComponent) {
+          try {
+            const lastNotified = await getLastNotified(ctx.store);
+            if (!lastNotified || lastNotified <= acrossOrder.blockNumber) {
+              const slackResult = await slackComponent.sendMessage(
+                SLACK_CROSS_CHAIN_CHANNEL,
+                getAcrossCreditMessage(
+                  acrossOrder.totalCreditsUsed,
+                  acrossOrder.inputAmount ?? BigInt(0),
+                  acrossOrder.inputToken,
+                  acrossOrder.creditIds.length,
+                  acrossOrder.txHash,
+                  acrossOrder.destinationTxHash,
+                  depositId,
+                  acrossOrder.acrossStatus,
+                  acrossOrder.timestamp,
+                  acrossOrder.beneficiary ?? acrossOrder.depositor,
+                  { executorAddress: acrossOrder.depositor, actionsSucceeded }
+                )
+              );
+
+              console.log(
+                `[SLACK] ✅ Sent Across cross-chain notification: ${
+                  acrossOrder.creditIds.length
+                } credits, ${formatMana(acrossOrder.totalCreditsUsed)}`
+              );
+
+              // Only queue for polling if the deposit is not yet in a TERMINAL state.
+              // Filled/refunded/expired are all final — no need to poll further. Previously
+              // we only checked filled+destTx, so refunded/expired initial responses would
+              // queue one wasted poll cycle before resolving.
+              const isTerminal =
+                acrossOrder.acrossStatus === AcrossDepositStatus.FILLED ||
+                acrossOrder.acrossStatus === AcrossDepositStatus.REFUNDED ||
+                acrossOrder.acrossStatus === AcrossDepositStatus.EXPIRED;
+              if (slackResult.ts && slackResult.channel && !isTerminal) {
+                pendingOrders.set(depositId, {
+                  provider: "across",
+                  orderHash: depositId,
+                  polygonTxHash: acrossOrder.txHash,
+                  slackTs: slackResult.ts,
+                  slackChannel: slackResult.channel,
+                  totalCreditsUsed: acrossOrder.totalCreditsUsed,
+                  bridgeInputAmount: acrossOrder.inputAmount ?? BigInt(0),
+                  bridgeInputToken: acrossOrder.inputToken ?? null,
+                  creditCount: acrossOrder.creditIds.length,
+                  timestamp: acrossOrder.timestamp,
+                  retryCount: 0,
+                  beneficiary: acrossOrder.beneficiary ?? acrossOrder.depositor,
+                  executorAddress: acrossOrder.depositor,
+                });
+                console.log(
+                  `[POLLING] 📥 Added Across order ${depositId.slice(
+                    0,
+                    18
+                  )}... to polling queue`
+                );
+              }
+            }
+          } catch (error) {
+            console.error(
+              `[SLACK] ❌ Failed to send Across cross-chain notification:`,
+              error
+            );
+          }
+        }
+      }
+
       // Save all entities to database
       await ctx.store.save([...userStats.values()]);
       await ctx.store.save([...hourlyUsage.values()]);
@@ -649,16 +936,18 @@ initSlack()
       await ctx.store.save(uniqueConsumptions);
       await ctx.store.save(manaTransactions);
       await ctx.store.save([...squidRouterOrders.values()]);
+      await ctx.store.save([...acrossOrders.values()]);
 
       // Only log batch completion if something was processed
       const totalEntities =
         userStats.size +
         uniqueConsumptions.length +
         manaTransactions.length +
-        squidRouterOrders.size;
+        squidRouterOrders.size +
+        acrossOrders.size;
       if (totalEntities > 0) {
         console.log(
-          `[PROCESSOR] ✅ Batch complete: ${uniqueConsumptions.length} consumptions, ${userStats.size} users, ${manaTransactions.length} MANA tx, ${squidRouterOrders.size} Squid orders`
+          `[PROCESSOR] ✅ Batch complete: ${uniqueConsumptions.length} consumptions, ${userStats.size} users, ${manaTransactions.length} MANA tx, ${squidRouterOrders.size} Squid orders, ${acrossOrders.size} Across orders`
         );
       }
     });

@@ -3,15 +3,17 @@
  * Handles fetching cross-chain transaction status from Squid Router
  */
 
+import { POLYGON_CHAIN_ID, ETHEREUM_CHAIN_ID } from "./constants";
+
 // Squid Router API configuration
 const SQUID_ROUTER_API_URL =
   process.env.SQUID_ROUTER_API_URL || "https://v2.api.squidrouter.com";
 const SQUID_INTEGRATOR_ID =
   process.env.SQUID_INTEGRATOR_ID || "decentraland-sdk-coral-test";
 
-// Chain IDs
-export const POLYGON_CHAIN_ID = "137";
-export const ETHEREUM_CHAIN_ID = "1";
+// Re-export the chain IDs so callers that previously imported them from coral
+// keep working — they live in src/constants.ts now.
+export { POLYGON_CHAIN_ID, ETHEREUM_CHAIN_ID };
 
 // Coral Scan URL
 export const CORAL_SCAN_BASE_URL = "https://coralscan.squidrouter.com/tx";

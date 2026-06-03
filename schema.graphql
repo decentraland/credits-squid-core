@@ -40,6 +40,32 @@ type SquidRouterOrder @entity {
 }
 
 """
+Tracks Across (V4) cross-chain deposits that use credits.
+Parallel to SquidRouterOrder but for the Across bridge: the source side emits a
+FundsDeposited event on the Polygon SpokePool, and the destination fill is resolved
+asynchronously via the Across deposit-status API.
+"""
+type AcrossOrder @entity {
+  id: ID! # depositId (stringified uint256)
+  depositId: String! @index # Across deposit ID from the FundsDeposited event (uint256)
+  creditIds: [String!]! # Array of credit IDs used in this order
+  totalCreditsUsed: BigInt! # Total credits consumed for this order
+  beneficiary: String @index # End-user wallet that consumed the credits (from CreditUsed._sender)
+  depositor: String! @index # Address that made the deposit (the SpokePoolPeriphery / Credits Executor, NOT the end user)
+  recipient: String # Destination recipient (e.g. the MulticallHandler on Ethereum)
+  inputToken: String # Token deposited on Polygon (normalized to 20-byte address)
+  outputToken: String # Token to be delivered on the destination chain
+  inputAmount: BigInt # Amount deposited on Polygon
+  outputAmount: BigInt # Amount to be delivered on the destination chain
+  destinationChainId: BigInt # Destination chain ID (1 = Ethereum for the NAME-claim flow)
+  txHash: String! @index # Polygon transaction hash (source)
+  destinationTxHash: String @index # Destination fill tx hash - populated async from the Across API
+  acrossStatus: String # Status from the Across API (pending, filled, refunded, expired)
+  blockNumber: Int! # Block number
+  timestamp: DateTime! # When the deposit was created
+}
+
+"""
 Tracks MANA transactions correlated with credit usage
 """
 type ManaTransaction @entity {
