@@ -55,7 +55,8 @@ type AcrossOrder @entity {
   recipient: String # Destination recipient (e.g. the MulticallHandler on Ethereum)
   inputToken: String # Token deposited on Polygon (normalized to 20-byte address)
   outputToken: String # Token to be delivered on the destination chain
-  inputAmount: BigInt # Amount deposited on Polygon
+  inputAmount: BigInt # Amount deposited on Polygon (the bridge leg, e.g. USDC)
+  inputManaAmount: BigInt # MANA the executor actually spent on the swap = NAME price + bridge/gas overhead (sum of MANA transferred out by the depositor in the source tx)
   outputAmount: BigInt # Amount to be delivered on the destination chain
   destinationChainId: BigInt # Destination chain ID (1 = Ethereum for the NAME-claim flow)
   txHash: String! @index # Polygon transaction hash (source)
