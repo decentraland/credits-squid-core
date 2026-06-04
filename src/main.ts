@@ -424,6 +424,18 @@ initSlack()
       const newOrderHashes = new Set<string>();
       const newAcrossDepositIds = new Set<string>();
 
+      // Snapshot the shared notification high-water mark ONCE per batch. Every Slack dedup
+      // decision below compares against this snapshot with a strict ">", and we advance the
+      // mark to the batch head at the end (only-forward). This is what stops a freshly deployed
+      // squid that re-indexes history from re-emitting notifications the promoted squid already
+      // sent: its snapshot is the promoted instance's head, so every replayed block is <= it and
+      // is skipped. Reading once (not per-event) lets a single tx's credit + cross-chain alerts
+      // both fire, since the marker doesn't move mid-batch.
+      const notifiedThroughBlock = await getLastNotified(ctx.store);
+      const alreadyNotified = (blockHeight: number): boolean =>
+        notifiedThroughBlock !== null &&
+        BigInt(blockHeight) <= notifiedThroughBlock;
+
       for (let block of ctx.blocks) {
         // Create a map of txHash -> logs for this block to efficiently find MANA transfers
         const logsByTxHash = new Map<
@@ -718,14 +730,11 @@ initSlack()
             }
             creditConsumptionsByTx.get(txHash)!.push(consumption);
 
-            // Send Slack notification for real-time consumption events
-            if (slackComponent) {
+            // Send Slack notification for real-time consumption events.
+            // Skip blocks already announced (by this or the promoted squid) — the mark is
+            // advanced once at the end of the batch, not here.
+            if (slackComponent && !alreadyNotified(block.header.height)) {
               try {
-                const lastNotified = await getLastNotified(ctx.store);
-                if (lastNotified && lastNotified > block.header.height) {
-                  // Skip unnecessary log
-                  continue;
-                }
                 await slackComponent.sendMessage(
                   SLACK_NOTIFICATIONS_CHANNEL,
                   getCreditUsedMessage(
@@ -737,7 +746,6 @@ initSlack()
                     timestamp
                   )
                 );
-                await setLastNotified(ctx.store, BigInt(block.header.height));
                 console.log(
                   `[SLACK] ✅ Sent notification for consumption ${salt}`
                 );
@@ -802,8 +810,7 @@ initSlack()
         // Send Slack notification with all accumulated credits
         if (slackComponent) {
           try {
-            const lastNotified = await getLastNotified(ctx.store);
-            if (!lastNotified || lastNotified <= squidOrder.blockNumber) {
+            if (!alreadyNotified(squidOrder.blockNumber)) {
               const slackResult = await slackComponent.sendMessage(
                 SLACK_CROSS_CHAIN_CHANNEL,
                 getCrossChainCreditMessage(
@@ -896,8 +903,7 @@ initSlack()
 
         if (slackComponent) {
           try {
-            const lastNotified = await getLastNotified(ctx.store);
-            if (!lastNotified || lastNotified <= acrossOrder.blockNumber) {
+            if (!alreadyNotified(acrossOrder.blockNumber)) {
               const slackResult = await slackComponent.sendMessage(
                 SLACK_CROSS_CHAIN_CHANNEL,
                 getAcrossCreditMessage(
@@ -975,6 +981,16 @@ initSlack()
       await ctx.store.save(manaTransactions);
       await ctx.store.save([...squidRouterOrders.values()]);
       await ctx.store.save([...acrossOrders.values()]);
+
+      // Advance the shared notification high-water mark to the batch head (only-forward, see
+      // setLastNotified). Doing it once per batch — not per credit event — means the mark tracks
+      // the chain head rather than lagging at the last credit block, so a re-indexing squid sees
+      // the promoted instance's head and skips everything below it. Gated on slackComponent so a
+      // notifications-disabled instance (e.g. local/dev) doesn't mark blocks as "announced".
+      const batchHeadBlock = ctx.blocks[ctx.blocks.length - 1]?.header.height;
+      if (slackComponent && batchHeadBlock !== undefined) {
+        await setLastNotified(ctx.store, BigInt(batchHeadBlock));
+      }
 
       // Only log batch completion if something was processed
       const totalEntities =

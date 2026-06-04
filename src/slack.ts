@@ -67,10 +67,16 @@ export async function getLastNotified(store: Store): Promise<bigint | null> {
   return lastNotified && BigInt(lastNotified);
 }
 
-export async function setLastNotified(store: Store, timestamp: bigint) {
+/**
+ * Advance the shared notification high-water mark. ONLY-FORWARD: a squid that is replaying
+ * history (e.g. a freshly deployed instance re-indexing from FROM_BLOCK) must never pull the
+ * mark backwards below where the promoted instance already notified, or it would re-emit
+ * notifications for blocks that were already announced. GREATEST keeps the max.
+ */
+export async function setLastNotified(store: Store, blockHeight: bigint) {
   const em = (store as unknown as { em: () => EntityManager }).em();
   await em.query(
-    `UPDATE public.squids SET last_notified = ${timestamp} WHERE name = 'credits'`
+    `UPDATE public.squids SET last_notified = GREATEST(COALESCE(last_notified, 0), ${blockHeight}) WHERE name = 'credits'`
   );
 }
 
