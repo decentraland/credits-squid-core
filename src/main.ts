@@ -431,7 +431,13 @@ initSlack()
       // sent: its snapshot is the promoted instance's head, so every replayed block is <= it and
       // is skipped. Reading once (not per-event) lets a single tx's credit + cross-chain alerts
       // both fire, since the marker doesn't move mid-batch.
-      const notifiedThroughBlock = await getLastNotified(ctx.store);
+      // Only read the shared marker when notifications are enabled. The mark is used purely to
+      // dedup Slack alerts (see alreadyNotified below), and setLastNotified is likewise gated on
+      // slackComponent — so a notifications-disabled instance (local/dev) never needs to touch
+      // public.squids at all, keeping it off the shared table and out of its permission surface.
+      const notifiedThroughBlock = slackComponent
+        ? await getLastNotified(ctx.store)
+        : null;
       const alreadyNotified = (blockHeight: number): boolean =>
         notifiedThroughBlock !== null &&
         BigInt(blockHeight) <= notifiedThroughBlock;

@@ -72,14 +72,21 @@ else
     ALTER DEFAULT PRIVILEGES FOR ROLE $NEW_DB_USER IN SCHEMA $NEW_SCHEMA_NAME
       GRANT SELECT ON TABLES TO $CREDITS_SERVER_API_READER_USER;
 
-    -- Grant insert/update to squid public table
-    GRANT SELECT, INSERT, UPDATE ON TABLE $SQUIDS_PUBLIC_TABLE TO $NEW_DB_USER;
-
     -- Insert a new record into the indexers table
     INSERT INTO public.indexers (service, schema, db_user, created_at, commit_hash)
     VALUES ('$SERVICE_NAME', '$NEW_SCHEMA_NAME', '$NEW_DB_USER', NOW(), '$COMMIT_HASH');
 EOSQL
 fi
+
+# Ensure the squid runtime user can read/write the shared public.squids table on EVERY start.
+# This MUST run on both the new-user and the resume paths: a resumed user (existing indexer row)
+# skips the creation block above, and a user can also lose this grant if public.squids is recreated
+# out-of-band (the grant is tied to the table object, so adding/recreating it drops prior grants).
+# The processor reads public.squids (getLastNotified) on every batch, so a missing grant is FATAL
+# and crash-loops the whole indexer. GRANT is idempotent, so re-applying it each start is safe.
+psql -v ON_ERROR_STOP=1 --username "$DB_USER" --dbname "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" <<-EOSQL
+  GRANT SELECT, INSERT, UPDATE ON TABLE public.$SQUIDS_PUBLIC_TABLE TO $NEW_DB_USER;
+EOSQL
 
 # Unset PGPASSWORD
 unset PGPASSWORD
