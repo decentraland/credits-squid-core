@@ -1,4 +1,6 @@
-import { assertNotNull, EvmBatchProcessor, Log } from "@subsquid/evm-processor";
+import { DataSourceBuilder, FieldSelection } from "@subsquid/evm-stream";
+import * as evmObjects from "@subsquid/evm-objects";
+import { PrometheusServer, run } from "@subsquid/batch-processor";
 import { TypeormDatabase } from "@subsquid/typeorm-store";
 import { CreditConsumption, SquidRouterOrder, AcrossOrder } from "./model";
 import { UserCreditStats, HourlyCreditUsage, DailyCreditUsage } from "./model";
@@ -27,6 +29,15 @@ import { formatMana } from "./utils";
 import { ManaTransfer } from "./types";
 import { fetchSquidStatus, SquidTransactionStatus } from "./coral";
 import { fetchAcrossStatus, AcrossDepositStatus } from "./across";
+
+// Field selection for the Portal stream. The new stream fetches ONLY these fields (no v2
+// defaults), so address/topics/data/transactionHash must be requested explicitly for decoding.
+export const fields = {
+  block: { timestamp: true },
+  log: { address: true, topics: true, data: true, transactionHash: true },
+} satisfies FieldSelection;
+export type Fields = typeof fields;
+export type Log = evmObjects.Log<Fields>;
 
 // Pending orders that need polling for the destination tx hash.
 // `provider` discriminates which status API to poll (Squid vs Across).
@@ -82,11 +93,6 @@ const POLLING_INTERVAL_MS = 30000; // 30 seconds
 const MAX_RETRIES = 30; // ~15 minutes max polling
 
 const schemaName = process.env.DB_SCHEMA;
-const RPC_ENDPOINT = process.env.RPC_ENDPOINT_POLYGON;
-const SQUID_API_KEY = assertNotNull(
-  process.env.SQUID_API_KEY,
-  "SQUID_API_KEY env var is required — the Subsquid gateway returns 403 without it (see https://docs.sqd.dev/v2-keys)"
-);
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
@@ -126,15 +132,11 @@ export const ACROSS_SPOKE_POOL_ADDRESS = (
   (isMainnet ? "0x9295ee1d8C5b022Be115A2AD3c30C72E34e7F096" : "")
 ).toLowerCase();
 
-const GATEWAY = isMainnet
-  ? "https://v2.archive.subsquid.io/network/polygon-mainnet"
-  : "https://v2.archive.subsquid.io/network/polygon-amoy-testnet";
+const PORTAL_URL = isMainnet
+  ? "https://portal.sqd.dev/datasets/polygon-mainnet"
+  : "https://portal.sqd.dev/datasets/polygon-amoy-testnet";
 
 const FROM_BLOCK = isMainnet ? 70459461 : 20612932;
-
-const FINALITY_CONFIRMATION = parseInt(
-  process.env.FINALITY_CONFIRMATION_POLYGON || "75"
-);
 
 // Initialize Slack component
 let slackComponent: ISlackComponent | undefined;
@@ -345,55 +347,78 @@ setInterval(() => {
   );
 }, POLLING_INTERVAL_MS);
 
-const processor = new EvmBatchProcessor()
-  .setGateway({ url: GATEWAY, apiKey: SQUID_API_KEY })
-  .setRpcEndpoint({
-    url: assertNotNull(RPC_ENDPOINT),
-    rateLimit: 10,
-  })
-  .setPrometheusPort(PROMETHEUS_PORT)
-  .setFinalityConfirmation(FINALITY_CONFIRMATION)
-  .setBlockRange({ from: FROM_BLOCK })
-  .setFields({
-    log: {
-      transactionHash: true,
+// Portal data source (replaces the deprecated v2 archive gateway). Portal delivers real-time and
+// finality itself, so setRpcEndpoint / setFinalityConfirmation are gone. The squid is log-only
+// (no contract-state reads), so no RPC client is needed. Field selection must be explicit now —
+// the Portal stream no longer merges the v2 default fields.
+const builder = new DataSourceBuilder()
+  .setPortal({ url: PORTAL_URL, http: { retryAttempts: Infinity } })
+  .setFields(fields)
+  .addLog({
+    where: {
+      address: [MANA_CONTRACT_ADDRESS],
+      topic0: [ERC20Events.Transfer.topic],
     },
+    range: { from: FROM_BLOCK },
   })
   .addLog({
-    address: [MANA_CONTRACT_ADDRESS],
-    topic0: [ERC20Events.Transfer.topic],
+    where: {
+      address: CREDITS_CONTRACT_ADDRESSES,
+      topic0: [CreditsEvents.CreditUsed.topic],
+    },
+    range: { from: FROM_BLOCK },
   })
   .addLog({
-    address: CREDITS_CONTRACT_ADDRESSES,
-    topic0: [CreditsEvents.CreditUsed.topic],
-  })
-  .addLog({
-    address: [SPOKE_CONTRACT_ADDRESS],
-    topic0: [SpokeEvents.OrderCreated.topic],
+    where: {
+      address: [SPOKE_CONTRACT_ADDRESS],
+      topic0: [SpokeEvents.OrderCreated.topic],
+    },
+    range: { from: FROM_BLOCK },
   });
 
 // Across deposits emit FundsDeposited on the SpokePool. Only wire the listener when
 // we have an address for the current network (mainnet always; testnet only if set via env).
 if (ACROSS_SPOKE_POOL_ADDRESS) {
-  processor.addLog({
-    address: [ACROSS_SPOKE_POOL_ADDRESS],
-    topic0: [AcrossEvents.FundsDeposited.topic],
+  builder.addLog({
+    where: {
+      address: [ACROSS_SPOKE_POOL_ADDRESS],
+      topic0: [AcrossEvents.FundsDeposited.topic],
+    },
+    range: { from: FROM_BLOCK },
   });
 }
 
+const dataSource = builder.build();
+
+// supportHotBlocks: false → the Portal data source ingests from /finalized-stream. A log-filtered
+// stream surfaces non-contiguous blocks, which the hot-block path rejects ("blocks must form a
+// continues chain"); finalized-stream has no such constraint. On Polygon finality is only a few
+// blocks (~seconds) behind head, so credit notifications stay effectively real-time, and processing
+// only finalized blocks means no reorg re-emits.
 const db = new TypeormDatabase({
   isolationLevel: "READ COMMITTED",
-  supportHotBlocks: true,
+  supportHotBlocks: false,
   stateSchema: `${schemaName}_processor`,
 });
+
+// Prometheus metrics moved off the (removed) EvmBatchProcessor onto run()'s prometheus option.
+const prometheus = new PrometheusServer();
+prometheus.setPort(Number(PROMETHEUS_PORT));
 
 // Initialize Slack before running the processor
 initSlack()
   .then(() => {
-    processor.run(db, async (ctx) => {
+    run(dataSource, db, async (simpleCtx) => {
+      // The batch-processor base context is bare {store, blocks, isHead}; augment each block to
+      // restore the back-references (log.transaction, block.logs[*].id, etc.) the handler relies on.
+      const ctx = {
+        ...simpleCtx,
+        blocks: simpleCtx.blocks.map(evmObjects.augmentBlock),
+      };
+
       console.log(
-        `[PROCESSOR] Batch range: ${ctx.blocks[0]?.header.height} -> ${
-          ctx.blocks[ctx.blocks.length - 1]?.header.height
+        `[PROCESSOR] Batch range: ${ctx.blocks[0]?.header.number} -> ${
+          ctx.blocks[ctx.blocks.length - 1]?.header.number
         }`
       );
 
@@ -447,7 +472,7 @@ initSlack()
         for (let log of block.logs) {
           const txHash =
             log.transactionHash ||
-            `unknown-${block.header.height}-${log.logIndex}`;
+            `unknown-${block.header.number}-${log.logIndex}`;
 
           // Add log to the txHash map
           if (!logsByTxHash.has(txHash)) {
@@ -464,7 +489,7 @@ initSlack()
           const transfers = findManaTransfersInBlock(
             logs,
             timestamp,
-            block.header.height
+            block.header.number
           );
 
           if (transfers.length > 0) {
@@ -494,7 +519,7 @@ initSlack()
           ) {
             creditTxHashes.add(
               log.transactionHash ||
-                `unknown-${block.header.height}-${log.logIndex}`
+                `unknown-${block.header.number}-${log.logIndex}`
             );
           }
         }
@@ -509,7 +534,7 @@ initSlack()
             const { orderHash, order } = SpokeEvents.OrderCreated.decode(log);
             const txHash =
               log.transactionHash ||
-              `unknown-${block.header.height}-${log.logIndex}`;
+              `unknown-${block.header.number}-${log.logIndex}`;
 
             orderCreatedByTx.set(txHash, { orderHash, order, log });
 
@@ -531,7 +556,7 @@ initSlack()
           ) {
             const txHash =
               log.transactionHash ||
-              `unknown-${block.header.height}-${log.logIndex}`;
+              `unknown-${block.header.number}-${log.logIndex}`;
 
             if (creditTxHashes.has(txHash)) {
               const deposit = AcrossEvents.FundsDeposited.decode(log);
@@ -567,13 +592,13 @@ initSlack()
 
             const txHash =
               log.transactionHash ||
-              `unknown-${block.header.height}-${log.logIndex}`;
+              `unknown-${block.header.number}-${log.logIndex}`;
 
             // Format MANA value for logs
             const formattedMana = formatMana(_value);
 
             // Create a unique consumptionId that includes tx details
-            const consumptionId = `${salt}-${block.header.height}-${txHash}`;
+            const consumptionId = `${salt}-${block.header.number}-${txHash}`;
 
             // Check if this specific consumption already exists in database
             const existingConsumption = await ctx.store.get(
@@ -617,7 +642,7 @@ initSlack()
               beneficiary: userStat,
               amount: _value,
               timestamp,
-              block: block.header.height,
+              block: block.header.number,
               txHash,
               orderHash: orderHash || null,
             });
@@ -654,7 +679,7 @@ initSlack()
                   txHash,
                   destinationTxHash: null,
                   squidStatus: null,
-                  blockNumber: block.header.height,
+                  blockNumber: block.header.number,
                   timestamp,
                 });
                 squidRouterOrders.set(orderHashStr, squidOrder);
@@ -706,7 +731,7 @@ initSlack()
                   txHash,
                   destinationTxHash: null,
                   acrossStatus: null,
-                  blockNumber: block.header.height,
+                  blockNumber: block.header.number,
                   timestamp,
                 });
                 acrossOrders.set(depositId, acrossOrder);
@@ -733,7 +758,7 @@ initSlack()
             // Send Slack notification for real-time consumption events.
             // Skip blocks already announced (by this or the promoted squid) — the mark is
             // advanced once at the end of the batch, not here.
-            if (slackComponent && !alreadyNotified(block.header.height)) {
+            if (slackComponent && !alreadyNotified(block.header.number)) {
               try {
                 await slackComponent.sendMessage(
                   SLACK_NOTIFICATIONS_CHANNEL,
@@ -741,7 +766,7 @@ initSlack()
                     salt,
                     _sender,
                     _value,
-                    block.header.height,
+                    block.header.number,
                     txHash,
                     timestamp
                   )
@@ -987,7 +1012,7 @@ initSlack()
       // the chain head rather than lagging at the last credit block, so a re-indexing squid sees
       // the promoted instance's head and skips everything below it. Gated on slackComponent so a
       // notifications-disabled instance (e.g. local/dev) doesn't mark blocks as "announced".
-      const batchHeadBlock = ctx.blocks[ctx.blocks.length - 1]?.header.height;
+      const batchHeadBlock = ctx.blocks[ctx.blocks.length - 1]?.header.number;
       if (slackComponent && batchHeadBlock !== undefined) {
         await setLastNotified(ctx.store, BigInt(batchHeadBlock));
       }
@@ -1004,7 +1029,7 @@ initSlack()
           `[PROCESSOR] ✅ Batch complete: ${uniqueConsumptions.length} consumptions, ${userStats.size} users, ${manaTransactions.length} MANA tx, ${squidRouterOrders.size} Squid orders, ${acrossOrders.size} Across orders`
         );
       }
-    });
+    }, { prometheus });
   })
   .catch((err) => {
     console.error("[PROCESSOR] ERROR: Failed to start processor:", err);
