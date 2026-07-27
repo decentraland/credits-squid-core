@@ -1,5 +1,5 @@
 import { Store } from "@subsquid/typeorm-store";
-import { Log } from "@subsquid/evm-processor";
+import type { Log } from "./main";
 import { CreditConsumption, ManaTransaction } from "./model";
 import { formatMana } from "./utils";
 import { events as ERC20Events } from "./abi/erc20";
