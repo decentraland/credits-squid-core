@@ -5,6 +5,7 @@ CURRENT_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 NEW_SCHEMA_NAME="squid_credits_${CURRENT_TIMESTAMP}"
 NEW_DB_USER="squid_credits_user_${CURRENT_TIMESTAMP}"
 CREDITS_SERVER_API_READER_USER="credits_server_user"
+REPORTING_READER_USER="creditsdata"
 SQUIDS_PUBLIC_TABLE="squids"
 
 # Get commit hash from environment variable
@@ -79,6 +80,26 @@ else
     INSERT INTO public.indexers (service, schema, db_user, created_at, commit_hash)
     VALUES ('$SERVICE_NAME', '$NEW_SCHEMA_NAME', '$NEW_DB_USER', NOW(), '$COMMIT_HASH');
 EOSQL
+fi
+
+# Same read access the API reader gets, for the reporting user. Run on every start rather than only at
+# creation, so a schema that predates this or lost the grant heals on its next deploy. Re-granting is a no-op.
+#
+# Guarded on the role existing: an absent role would abort under ON_ERROR_STOP and take the deploy with it.
+REPORTING_READER_EXISTS=$(psql -tA --username "$DB_USER" --dbname "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" \
+  -c "SELECT 1 FROM pg_roles WHERE rolname = '$REPORTING_READER_USER'")
+
+if [ -n "$REPORTING_READER_EXISTS" ]; then
+  echo "Granting read access on $NEW_SCHEMA_NAME to $REPORTING_READER_USER"
+  # ALL TABLES covers a resumed schema; DEFAULT PRIVILEGES covers tables the processor creates later.
+  psql -v ON_ERROR_STOP=1 --username "$DB_USER" --dbname "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" <<-EOSQL
+    GRANT USAGE ON SCHEMA $NEW_SCHEMA_NAME TO $REPORTING_READER_USER;
+    GRANT SELECT ON ALL TABLES IN SCHEMA $NEW_SCHEMA_NAME TO $REPORTING_READER_USER;
+    ALTER DEFAULT PRIVILEGES FOR ROLE $NEW_DB_USER IN SCHEMA $NEW_SCHEMA_NAME
+      GRANT SELECT ON TABLES TO $REPORTING_READER_USER;
+EOSQL
+else
+  echo "Role $REPORTING_READER_USER does not exist; skipping its grants"
 fi
 
 # Unset PGPASSWORD
