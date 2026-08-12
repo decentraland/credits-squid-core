@@ -7,3 +7,14 @@
 # IDE files
 /.idea
 .env
+
+# OS noise
+.DS_Store
+
+# Local agent skills and working notes — never part of the repo
+/.agents
+/.claude
+/skills-lock.json
+/DOCUMENTATION.md
+/MIGRATION_PIPES_SDK.md
+/PR.md
