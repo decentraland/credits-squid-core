@@ -8,6 +8,7 @@ import { events as CreditsEvents } from "./abi/credits";
 import { events as ERC20Events } from "./abi/erc20";
 import { events as SpokeEvents } from "./abi/spoke";
 import { events as AcrossEvents } from "./abi/acrossSpokePool";
+import { portalSource } from "./portal";
 import {
   createSlackComponent,
   getCreditUsedMessage,
@@ -132,9 +133,8 @@ export const ACROSS_SPOKE_POOL_ADDRESS = (
   (isMainnet ? "0x9295ee1d8C5b022Be115A2AD3c30C72E34e7F096" : "")
 ).toLowerCase();
 
-const PORTAL_URL = isMainnet
-  ? "https://portal.sqd.dev/datasets/polygon-mainnet"
-  : "https://portal.sqd.dev/datasets/polygon-amoy-testnet";
+// Which Portal endpoint this dataset is read from, and why, is documented in portalSource.
+const PORTAL_DATASET = isMainnet ? "polygon-mainnet" : "polygon-amoy-testnet";
 
 const FROM_BLOCK = isMainnet ? 70459461 : 20612932;
 
@@ -352,7 +352,7 @@ setInterval(() => {
 // (no contract-state reads), so no RPC client is needed. Field selection must be explicit now —
 // the Portal stream no longer merges the v2 default fields.
 const builder = new DataSourceBuilder()
-  .setPortal({ url: PORTAL_URL, http: { retryAttempts: Infinity } })
+  .setPortal(portalSource(PORTAL_DATASET))
   .setFields(fields)
   .addLog({
     where: {
