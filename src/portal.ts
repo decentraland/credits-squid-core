@@ -20,14 +20,13 @@ export function portalSource(dataset: string): {
   url: string;
   http: { headers?: Record<string, string>; retryAttempts: number };
 } {
-  // Only a PORTAL key authenticates the shared endpoint: SQD_PORTAL_API_KEY (SSM
-  // `ops-param-sqd-portal-api-key`).
+  // Only SQD_PORTAL_API_KEY authenticates the shared endpoint.
   //
-  // SQUID_API_KEY is deliberately NOT read here. It is the v2 ARCHIVE key, a different SQD product,
-  // and it briefly held a Portal key while the two shared one parameter. Reading it as a fallback
-  // took the trades squid down on deploy: it found the archive key, decided a key was present, sent
-  // it to the shared endpoint and got `403` on every batch. Without any key the public endpoint
-  // serves the same data unauthenticated, so guessing is strictly worse than not guessing.
+  // SQUID_API_KEY is deliberately NOT read here. It carries the key for a different SQD product (the
+  // v2 archive), and only held a Portal key while both shared one variable. Reading it as a fallback
+  // took the trades squid down on deploy: it found the archive key, concluded a key was available,
+  // sent it to the shared endpoint and got `403` on every batch. With no key at all the public
+  // endpoint serves the same data unauthenticated, so guessing is worse than not guessing.
   const apiKey = process.env.SQD_PORTAL_API_KEY;
   const host =
     process.env.SQD_PORTAL_URL || (apiKey ? SHARED_PORTAL_HOST : PUBLIC_PORTAL_HOST);
