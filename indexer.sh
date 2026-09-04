@@ -107,10 +107,23 @@ unset PGPASSWORD
 
 # Construct the DB_URL with the new user
 export DB_URL=postgresql://$NEW_DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME
-export DB_SCHEMA=$NEW_SCHEMA_NAME
+# The deployment's schema name goes to SQUID_SCHEMA, and DB_SCHEMA is left unset.
+#
+# @subsquid/typeorm-config >= 4.2.0 turns DB_SCHEMA into a per-connection
+# `options=-c search_path="<name>"` sent in the pg startup packet, which overrides the
+# role's default search_path on every connection. That is incompatible with promotion:
+# the management server RENAMES this schema to the project's live name and updates the
+# role's default, so a pinned name goes stale the instant the squid is promoted. Every
+# unqualified query then fails with "relation does not exist", and because the pin comes
+# from the environment rather than from a stale session, restarting cannot recover it.
+# This squid resolves 4.1.1 today, which ignores DB_SCHEMA entirely, so this is a guard
+# against the next typeorm-store bump rather than a live fix. The role default that the
+# ALTER USER above and the promote both maintain stays the single source of truth.
+export SQUID_SCHEMA=$NEW_SCHEMA_NAME
+unset DB_SCHEMA
 export CURRENT_SQUID_DB_USER=$NEW_DB_USER
 echo "Exported CURRENT_SQUID_DB_USER: $CURRENT_SQUID_DB_USER"
-echo "Exported DB_SCHEMA: $DB_SCHEMA"
+echo "Exported SQUID_SCHEMA: $SQUID_SCHEMA"
 
 # Start the processor service
 echo "Starting squid services..."
