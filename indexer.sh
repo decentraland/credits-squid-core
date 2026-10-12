@@ -82,6 +82,23 @@ else
 EOSQL
 fi
 
+# The processor status (<schema>_processor.status) is how far this deployment has committed. credits-server
+# reads it to decide when an abandoned reservation can be released, so it gets the same read access it already
+# has to the data tables. The processor creates that schema with IF NOT EXISTS, so creating it here first,
+# owned by the deployment user, is what lets the grant be in place before the table exists. Run on every start
+# so a resumed deployment gets it too. Re-granting is a no-op.
+PROCESSOR_SCHEMA_NAME="${NEW_SCHEMA_NAME}_processor"
+echo "Granting read access on $PROCESSOR_SCHEMA_NAME to $CREDITS_SERVER_API_READER_USER"
+# Not fatal: without the grant credits-server treats the head as unknown and holds reservations, so the squid
+# still starts, but the gap must show up in the logs.
+psql -v ON_ERROR_STOP=1 --username "$DB_USER" --dbname "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" <<-EOSQL || echo "WARN: could not grant read access on $PROCESSOR_SCHEMA_NAME to $CREDITS_SERVER_API_READER_USER"
+  CREATE SCHEMA IF NOT EXISTS $PROCESSOR_SCHEMA_NAME AUTHORIZATION $NEW_DB_USER;
+  GRANT USAGE ON SCHEMA $PROCESSOR_SCHEMA_NAME TO $CREDITS_SERVER_API_READER_USER;
+  GRANT SELECT ON ALL TABLES IN SCHEMA $PROCESSOR_SCHEMA_NAME TO $CREDITS_SERVER_API_READER_USER;
+  ALTER DEFAULT PRIVILEGES FOR ROLE $NEW_DB_USER IN SCHEMA $PROCESSOR_SCHEMA_NAME
+    GRANT SELECT ON TABLES TO $CREDITS_SERVER_API_READER_USER;
+EOSQL
+
 # Same read access the API reader gets, for the reporting user. Run on every start rather than only at
 # creation, so a schema that predates this or lost the grant heals on its next deploy. Re-granting is a no-op.
 #
