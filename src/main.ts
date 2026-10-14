@@ -92,7 +92,9 @@ function sumManaSpentBy(
 const POLLING_INTERVAL_MS = 30000; // 30 seconds
 const MAX_RETRIES = 30; // ~15 minutes max polling
 
-const schemaName = process.env.DB_SCHEMA;
+// SQUID_SCHEMA, not DB_SCHEMA: typeorm-config would turn the latter into a
+// per-connection search_path pin that promotion invalidates (see indexer.sh).
+const schemaName = process.env.SQUID_SCHEMA;
 const PROMETHEUS_PORT = process.env.PROMETHEUS_PORT || 3001;
 const isMainnet = process.env.POLYGON_CHAIN_ID === "137";
 
