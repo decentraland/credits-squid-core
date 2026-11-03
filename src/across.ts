@@ -49,7 +49,7 @@ interface AcrossStatusResponse {
   depositTxHash?: string;
   // `actionsSucceeded` reports whether the embedded MulticallHandler actions
   // (approve + register + sweep) ran — i.e. whether the NAME was actually minted.
-  // false ⇒ the deposit filled but the register reverted; bridged MANA went to recovery.
+  // false ⇒ the deposit filled but the register reverted; bridged USDC went to recovery.
   actionsSucceeded?: boolean;
   depositRefundTxHash?: string | null;
 }

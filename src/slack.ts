@@ -155,9 +155,9 @@ export function getCrossChainCreditMessage(
   return `${header}${stalledNote}
 
 *User:* \`${beneficiary}\`${executorLine}
-*Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
+*Credit signatures:* \`${creditCount}\` (\`${ethers.formatEther(
     totalCreditsUsed
-  )}\` MANA)
+  )}\` MANA consumed)
 *WETH Bridged:* \`${ethers.formatEther(manaBridged)}\` WETH
 
 *Order Hash:* \`${orderHash.slice(0, 18)}...\`
@@ -228,12 +228,12 @@ export function getAcrossCreditMessage(
     ? `https://etherscan.io/tx/${ethereumTxHash}`
     : null;
 
-  // A deposit can be `filled` (MANA delivered to the destination) yet have its embedded
-  // actions revert — i.e. the register failed and the bridged MANA went to the recovery
-  // wallet instead of minting the NAME. Treat that as a failure even though Across reports
-  // `filled`. Only flag it once the deposit has actually filled — actionsSucceeded defaults
-  // to false before the fill is observed, so guarding on `filled` avoids false alarms on a
-  // still-pending deposit.
+  // A deposit can be `filled` (the bridge token delivered to the destination) yet have its
+  // embedded actions revert — the destination swap or the register failed and the bridge
+  // token went to the recovery wallet instead of minting the NAME. Treat that as a failure
+  // even though Across reports `filled`. Only flag it once the deposit has actually filled —
+  // actionsSucceeded defaults to false before the fill is observed, so guarding on `filled`
+  // avoids false alarms on a still-pending deposit.
   const isFilled = !!acrossStatus && acrossStatus.toLowerCase() === "filled";
   const actionsFailed = isFilled && options.actionsSucceeded === false;
 
@@ -248,8 +248,17 @@ export function getAcrossCreditMessage(
     ? `\n*⚠️ Polling timed out before destination fill was observed.*`
     : "";
 
+  // The actions run as one multicall, so when any of them reverts nothing is swapped and the
+  // handler forwards the destination bridge token (USDC) to the recovery wallet. The origin
+  // token is looked up because it is the one we receive; both legs are USDC today. Credits are
+  // always spent by then: they are consumed in the Polygon deposit transaction itself.
+  const bridgeSymbol = bridgeInputToken
+    ? BRIDGE_TOKEN_DECIMALS[bridgeInputToken.toLowerCase()]?.symbol
+    : undefined;
   const actionsNote = actionsFailed
-    ? `\n*⚠️ Deposit filled but the register reverted — bridged MANA went to the recovery wallet, the NAME was NOT minted.*`
+    ? `\n*⚠️ Deposit filled but the destination swap or register reverted — the bridged ${
+        bridgeSymbol || "token"
+      } went to the recovery wallet, the NAME was NOT minted. The user's credits were spent: refund them.*`
     : "";
 
   const executorLine =
@@ -275,14 +284,14 @@ export function getAcrossCreditMessage(
   return `${header}${stalledNote}${actionsNote}
 
 *User:* \`${beneficiary}\`${executorLine}
-*Credits Used:* \`${creditCount}\` credits (\`${ethers.formatEther(
+*Credit signatures:* \`${creditCount}\` (\`${ethers.formatEther(
     totalCreditsUsed
-  )}\` MANA)${manaSpentLine}
+  )}\` MANA consumed)${manaSpentLine}
 *Bridged:* \`${formatBridgeAmount(bridgeInputAmount, bridgeInputToken)}\`
 
 *Deposit ID:* \`${depositId.slice(0, 18)}...\`
 *Across Status:* \`${acrossStatus || "unknown"}\`${
-    isFilled ? ` (register ${actionsFailed ? "FAILED" : "ok"})` : ""
+    isFilled ? ` (actions ${actionsFailed ? "FAILED" : "ok"})` : ""
   }
 
 *Polygon Tx:* <${polygonscanUrl}|View on Polygonscan>
