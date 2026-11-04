@@ -906,7 +906,7 @@ initSlack()
         if (!acrossOrder) continue;
 
         // Whether the destination actions (the register) succeeded. false ⇒ filled but
-        // the register reverted; the bridged MANA went to the recovery wallet.
+        // the swap or register reverted; the bridged USDC went to the recovery wallet.
         let actionsSucceeded = true;
         try {
           const result = await fetchAcrossStatus(acrossOrder.txHash);
