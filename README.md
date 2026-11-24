@@ -52,6 +52,13 @@ The squid tracks the following entities:
 
 After starting the processor, you can query the indexed data using GraphQL at `http://localhost:4350/graphql`.
 
+The API keeps running when the database ends one of its connections, idle or running a query, as an
+engine upgrade, a restart or a failover does. `@subsquid/graphql-server` creates its connection pool
+without an `error` listener, so such an error ends the process. `lib/api/serve.js` (`serve` and
+`serve:prod` in `commands.json`) starts the server with a listener on every pool and every connection
+it opens: a query that was running gets the error, and the pool discards the broken connection and
+opens another for the next query.
+
 Example query:
 ```graphql
 query {

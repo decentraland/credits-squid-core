@@ -14,5 +14,5 @@ jobs:
           cache: npm
       - name: install
         run: npm install
-      - name: build
-        run: npm run build
+      - name: build and test
+        run: npm test

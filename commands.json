@@ -66,12 +66,13 @@
     },
     "serve": {
       "description": "Start the GraphQL API server",
-      "cmd": ["squid-graphql-server"]
+      "cmd": ["node", "lib/api/serve.js"]
     },
     "serve:prod": {
       "description": "Start the GraphQL API server with caching and limits",
       "cmd": [
-        "squid-graphql-server",
+        "node",
+        "lib/api/serve.js",
         "--dumb-cache",
         "in-memory",
         "--dumb-cache-ttl",
