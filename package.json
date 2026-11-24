@@ -7,7 +7,8 @@
     "build": "rm -rf lib && tsc",
     "db:migrate": "npx squid-typeorm-migration apply",
     "processor:start": "node lib/main.js",
-    "start": "npm run processor:start"
+    "start": "npm run processor:start",
+    "test": "npm run build && node --test \"lib/**/*.test.js\""
   },
   "dependencies": {
     "@slack/bolt": "^4.2.1",
